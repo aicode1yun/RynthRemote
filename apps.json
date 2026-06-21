@@ -11,13 +11,13 @@
       "iconURL": "https://raw.githubusercontent.com/tombohar/RynthRemote/main/icon.png",
       "tintColor": "6366f1",
       "category": "utilities",
-      "version": "1.0.10",
+      "version": "1.0.11",
       "versionDate": "2026-06-21",
-      "versionDescription": "Automated build 1.0.10.",
-      "downloadURL": "https://github.com/tombohar/RynthRemote/releases/download/v1.0.10/RynthRemote.ipa",
-      "size": 5718291,
+      "versionDescription": "Automated build 1.0.11.",
+      "downloadURL": "https://github.com/tombohar/RynthRemote/releases/download/v1.0.11/RynthRemote.ipa",
+      "size": 5719252,
       "versions": [
-        { "version": "1.0.10", "date": "2026-06-21", "localizedDescription": "Automated build 1.0.10.", "downloadURL": "https://github.com/tombohar/RynthRemote/releases/download/v1.0.10/RynthRemote.ipa", "size": 5718291, "minOSVersion": "15.0" }
+        { "version": "1.0.11", "date": "2026-06-21", "localizedDescription": "Automated build 1.0.11.", "downloadURL": "https://github.com/tombohar/RynthRemote/releases/download/v1.0.11/RynthRemote.ipa", "size": 5719252, "minOSVersion": "15.0" }
       ]
     }
   ],
