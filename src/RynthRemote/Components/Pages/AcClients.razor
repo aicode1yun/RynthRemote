@@ -1,0 +1,472 @@
+@page "/"
+@page "/clients"
+@using RynthRemote.AcStatus
+@inject IAcStatusClient Status
+@inject SettingsStore SettingsSvc
+@implements IAsyncDisposable
+
+<PageTitle>AC Clients - MicroManager</PageTitle>
+
+<style>
+    .ac-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(250px,1fr)); gap:.75rem; }
+    .ac-card { border:1px solid var(--border); border-radius:10px; padding:.7rem .8rem; background:var(--surface); }
+    .ac-card.bad { border-color:var(--red); }
+    .ac-head { display:flex; align-items:center; justify-content:space-between; gap:.5rem; }
+    .ac-name { font-weight:700; }
+    .ac-sub { color:var(--muted); font-size:.78rem; }
+    .ac-badge { font-size:.7rem; font-weight:700; text-transform:uppercase; letter-spacing:.04em; padding:.15rem .45rem; border-radius:999px; color:#0b1120; }
+    .ac-bar { height:12px; border-radius:6px; background:var(--surface-2); overflow:hidden; margin:.15rem 0; }
+    .ac-bar > span { display:block; height:100%; }
+    .ac-vlabel { display:flex; justify-content:space-between; font-size:.7rem; color:var(--muted); }
+    .ac-doing { margin:.5rem 0 .25rem; font-size:.85rem; }
+    .ac-stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(56px,1fr)); gap:.3rem; margin:.4rem 0 .25rem; }
+    .ac-stat { background:var(--surface-2); border-radius:6px; padding:.25rem .2rem; text-align:center; }
+    .ac-stat .sv { font-weight:700; font-size:.9rem; font-variant-numeric:tabular-nums; line-height:1.1; }
+    .ac-stat .sv.warn { color:var(--amber); }
+    .ac-stat .sl { font-size:.6rem; color:var(--muted); text-transform:uppercase; letter-spacing:.03em; }
+    .ac-foot { display:flex; flex-wrap:wrap; gap:.5rem .9rem; font-size:.72rem; color:var(--muted); margin-top:.4rem; }
+    .ac-issue { font-size:.72rem; color:var(--amber); margin-top:.35rem; word-break:break-word; }
+    .ac-warn { color:var(--amber); }
+    .ac-ctrl { display:flex; flex-wrap:wrap; gap:.3rem; margin-top:.45rem; align-items:center; }
+    .ac-pill { font-size:.72rem; padding:.22rem .55rem; border-radius:999px; border:1px solid var(--border); background:var(--surface-2); color:inherit; cursor:pointer; }
+    .ac-pill:disabled { opacity:.5; cursor:default; }
+    .ac-pill.on { background:#34d399; color:#06281c; border-color:transparent; font-weight:700; }
+    .ac-pill.ac-macro.on { background:#f87171; color:#3a0b0b; }
+    .ac-sel { font-size:.72rem; padding:.18rem .3rem; border-radius:6px; border:1px solid var(--border); background:var(--surface-2); color:inherit; flex:1 1 30%; min-width:0; }
+    .ac-cmd-msg { font-size:.7rem; color:var(--muted); margin-top:.25rem; }
+    .ac-gear { margin-top:.4rem; }
+    .ac-gear-h { font-size:.74rem; background:none; border:none; color:var(--muted); cursor:pointer; padding:.1rem 0; }
+    .ac-gear-list { display:flex; flex-direction:column; gap:.12rem; margin-top:.2rem; }
+    .ac-gear-row { display:flex; justify-content:space-between; gap:.5rem; font-size:.72rem; }
+    .ac-gear-row { cursor:pointer; }
+    .ac-gear-row .gn { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .ac-gear-row .gi { color:var(--muted); font-family:ui-monospace,monospace; user-select:all; white-space:nowrap; }
+    .ac-appr { font-size:.7rem; margin:.15rem 0 .35rem .6rem; padding-left:.5rem; border-left:2px solid var(--border); display:flex; flex-direction:column; gap:.15rem; }
+    .ac-appr b { font-weight:700; }
+    .ac-appr .rb { color:var(--amber); margin-left:.4rem; }
+    .ac-appr .amono { color:var(--muted); display:flex; flex-wrap:wrap; gap:.5rem; }
+    .ac-appr .aspells { display:flex; flex-wrap:wrap; gap:.25rem; }
+    .ac-appr .aspells .sp { background:var(--surface-2); border-radius:4px; padding:.05rem .35rem; }
+    .ac-appr .adesc { color:var(--muted); font-style:italic; }
+</style>
+
+<div class="card-head">
+    <h1>&#127918; AC Clients</h1>
+    <div class="flex" style="gap:.5rem">
+        <button class="btn-r ghost sm" @onclick="() => _showControls = !_showControls">@(_showControls ? "Hide controls" : "Controls")</button>
+        <button class="btn-r ghost sm" @onclick="ToggleConfig">@(_showConfig ? "Close" : "Connection")</button>
+        <button class="btn-r ghost sm" @onclick="Refresh" disabled="@string.IsNullOrWhiteSpace(_url)">Refresh</button>
+    </div>
+</div>
+
+@if (_showConfig || string.IsNullOrWhiteSpace(_url))
+{
+    <div class="card-r mb">
+        <h3 style="margin-top:0">RynthCore StatusAgent</h3>
+        <p class="muted" style="font-size:.82rem;margin-top:0">
+            URL of your StatusAgent's pull endpoint, e.g. <code>http://your-pc:8740/status</code>
+            (over Tailscale/LAN). Leave the token blank unless you set <code>ServeToken</code>.
+        </p>
+        <div class="field">
+            <label>Status URL</label>
+            <input @bind="_urlEdit" placeholder="http://your-pc:8740/status" />
+        </div>
+        <div class="field">
+            <label>Token (optional)</label>
+            <input @bind="_tokenEdit" placeholder="bearer token, if any" />
+        </div>
+        <div class="flex" style="gap:.5rem;margin-top:.5rem">
+            <button class="btn-r" @onclick="SaveConfig">Save</button>
+            @if (_savedConfig) { <span class="badge-r green">saved</span> }
+        </div>
+    </div>
+}
+
+@if (string.IsNullOrWhiteSpace(_url))
+{
+    <div class="card-r"><p class="muted">Set your StatusAgent URL above to see your AC clients.</p></div>
+}
+else if (_result is null)
+{
+    <p class="loading">Connecting to @_url …</p>
+}
+else if (!_result.Ok)
+{
+    <div class="card-r">
+        <p class="ac-warn" style="margin-top:0">&#9888; @_result.Error</p>
+        <p class="ac-sub">@_url — retrying every few seconds.</p>
+    </div>
+}
+else
+{
+    var clients = _result.Payload!.Clients;
+    var bad = clients.Count(c => !c.Healthy);
+
+    <div class="card-r mb" style="border-left:4px solid @(bad > 0 ? "var(--red)" : "var(--green)")">
+        <strong>@(clients.Count == 0 ? "No clients running"
+                  : bad == 0 ? $"All {clients.Count} healthy"
+                  : $"{bad} of {clients.Count} need attention")</strong>
+        <span class="ac-sub" style="margin-left:.5rem">
+            @_result.Payload.Host · updated @Ago(_result.Payload.GeneratedAtUtc)
+        </span>
+    </div>
+
+    <div class="ac-grid">
+        @foreach (var c in clients.OrderByDescending(c => !c.Healthy).ThenBy(c => c.Character))
+        {
+            <div class="ac-card @(c.Healthy ? "" : "bad")">
+                <div class="ac-head">
+                    <div>
+                        <div class="ac-name">@c.DisplayName</div>
+                        <div class="ac-sub">@c.Server</div>
+                    </div>
+                    <span class="ac-badge" style="background:@StateColor(c.State)">@c.State</span>
+                </div>
+
+                @if (c.Player is { } v && v.MaxHp > 0)
+                {
+                    @Bar("HP", v.Hp, v.MaxHp, "#ef4444")
+                    @Bar("Stam", v.St, v.MaxSt, "#22c55e")
+                    @Bar("Mana", v.Mn, v.MaxMn, "#3b82f6")
+                }
+
+                <div class="ac-doing">
+                    @if (!string.IsNullOrWhiteSpace(c.BotAction)) { <span>@c.BotAction</span> }
+                    else if (!string.IsNullOrWhiteSpace(c.CurrentState)) { <span>@c.CurrentState</span> }
+                    else { <span class="ac-sub">@(c.InWorld ? "In world" : "Not in world")</span> }
+                    @if (!string.IsNullOrWhiteSpace(c.Target)) { <span class="ac-sub"> → @c.Target</span> }
+                </div>
+
+                @if (!string.Equals(c.Source, "heartbeat-log", StringComparison.OrdinalIgnoreCase))
+                {
+                    <div class="ac-stats">
+                        @Stat("kills/hr", c.KillsPerHour.ToString("F0"))
+                        @Stat("kills", c.SessionKills.ToString())
+                        @Stat("last kill", Since(c.SecsSinceLastKill), StaleKill(c))
+                        @Stat("xp/hr", FmtRate(c.XpPerHour))
+                        @Stat("xp ses", FmtRate(c.XpSession))
+                        @if (c.LuminancePerHour > 0) { @Stat("lum/hr", FmtRate(c.LuminancePerHour)) }
+                        @Stat("vitae", c.VitaePct > 0 ? $"{c.VitaePct:F0}%" : "0")
+                        @Stat("deaths", c.DeathsSession > 0 ? $"{c.DeathsSession}/{c.Deaths}" : c.Deaths.ToString())
+                        @if (c.BurdenPct > 0) { @Stat("burden", $"{c.BurdenPct:F0}%", c.BurdenPct >= 100) }
+                        @if (c.FreeSlots >= 0) { @Stat("slots", c.FreeSlots.ToString(), c.FreeSlots <= 2) }
+                        @if (c.ScarabsByType is { Count: > 0 })
+                        {
+                            @foreach (var s in c.ScarabsByType)
+                            {
+                                @Stat(s.ShortLabel, s.Count.ToString(), s.Count <= 50)
+                            }
+                        }
+                        else if (c.Scarabs >= 0) { @Stat("scarabs", c.Scarabs.ToString(), c.Scarabs <= 50) }
+                        @if (c.Tapers >= 0) { @Stat("tapers", c.Tapers.ToString(), c.Tapers <= 50) }
+                        @if (!string.IsNullOrWhiteSpace(c.Area)) { @Stat("area", c.Area!) }
+                    </div>
+                    @if (!string.IsNullOrWhiteSpace(c.LastIssue))
+                    {
+                        <div class="ac-issue" title="most recent engine warning/error">
+                            &#9888; @c.LastIssue@(c.LastIssueAgeSec >= 0 ? $" ({Since((int)c.LastIssueAgeSec)} ago)" : "")
+                        </div>
+                    }
+
+                    @if (c.Equipment is { Count: > 0 })
+                    {
+                        <div class="ac-gear">
+                            <button class="ac-gear-h" @onclick="@(() => ToggleGear(c.Pid))">
+                                @(_showGear.Contains(c.Pid) ? "▾" : "▸") Gear (@c.Equipment.Count)
+                            </button>
+                            @if (_showGear.Contains(c.Pid))
+                            {
+                                <div class="ac-gear-list">
+                                    @foreach (var it in c.Equipment)
+                                    {
+                                        <div>
+                                            <div class="ac-gear-row" @onclick="@(() => ToggleItem(it.Id))" title="tap for appraisal">
+                                                <span class="gn">@(it.HasAppraisal ? (_showItem.Contains(it.Id) ? "▾ " : "▸ ") : "")@it.Name</span>
+                                                <span class="gi">@it.HexId</span>
+                                            </div>
+                                            @if (_showItem.Contains(it.Id) && it.HasAppraisal)
+                                            {
+                                                <div class="ac-appr">
+                                                    @if (it.IsArmor)
+                                                    {
+                                                        <div><b>AL @it.ArmorLevel</b>@foreach (var r in it.NotableResists()){<span class="rb">@r.Label ×@r.Mod.ToString("0.00")</span>}</div>
+                                                    }
+                                                    @if (it.IsWeapon)
+                                                    {
+                                                        <div><b>Dmg @it.Damage</b> @it.DamageTypeName() · var ×@it.Variance.ToString("0.00")@(it.ElementalMod > 1 ? $" · elem +{(it.ElementalMod * 100 - 100):0}%" : "")</div>
+                                                        <div>Def: melee @it.WeaponDef.ToString("0.00") · missile @it.MissileDef.ToString("0.00") · magic @it.MagicDef.ToString("0.00")</div>
+                                                    }
+                                                    <div class="amono">
+                                                        @if (it.Workmanship > 0) { <span>wk @it.Workmanship</span> }
+                                                        @if (it.Value > 0) { <span>@it.Value.ToString("N0") pyreal</span> }
+                                                        @if (it.Burden > 0) { <span>bur @it.Burden</span> }
+                                                        @if (it.MaxMana > 0) { <span>mana @it.CurMana/@it.MaxMana</span> }
+                                                    </div>
+                                                    @if (it.Spells is { Count: > 0 })
+                                                    {
+                                                        <div class="aspells">@foreach (var sp in it.Spells){<span class="sp">@sp</span>}</div>
+                                                    }
+                                                    @if (!string.IsNullOrWhiteSpace(it.LongDesc))
+                                                    {
+                                                        <div class="adesc">@it.LongDesc</div>
+                                                    }
+                                                </div>
+                                            }
+                                        </div>
+                                    }
+                                </div>
+                            }
+                        </div>
+                    }
+
+                    @if (_showControls)
+                    {
+                        <div class="ac-ctrl">
+                            <button class="ac-pill ac-macro @(c.MacroRunning ? "on" : "")"
+                                    @onclick="@(() => SendCommand(c, "macro", c.MacroRunning ? "false" : "true"))">
+                                @(c.MacroRunning ? "■ Stop" : "▶ Start")
+                            </button>
+                            @foreach (var t in Toggles(c))
+                            {
+                                <button class="ac-pill @(t.On ? "on" : "")"
+                                        @onclick="@(() => SendCommand(c, t.Action, t.On ? "false" : "true"))">@t.Label</button>
+                            }
+                        </div>
+                        @if (c.NavProfiles is { Count: > 0 } || c.LootProfiles is { Count: > 0 } || c.MetaProfiles is { Count: > 0 })
+                        {
+                            <div class="ac-ctrl">
+                                @if (c.NavProfiles is { Count: > 0 })
+                                {
+                                    <select class="ac-sel" title="nav profile" @onchange="@(e => CmdProfile(c, "navProfile", e))">
+                                        @for (int i = 0; i < c.NavProfiles.Count; i++)
+                                        { <option value="@i" selected="@(i == c.SelectedNavIdx)">@Trunc(c.NavProfiles[i])</option> }
+                                    </select>
+                                }
+                                @if (c.LootProfiles is { Count: > 0 })
+                                {
+                                    <select class="ac-sel" title="loot profile" @onchange="@(e => CmdProfile(c, "lootProfile", e))">
+                                        @for (int i = 0; i < c.LootProfiles.Count; i++)
+                                        { <option value="@i" selected="@(i == c.SelectedLootIdx)">@Trunc(c.LootProfiles[i])</option> }
+                                    </select>
+                                }
+                                @if (c.MetaProfiles is { Count: > 0 })
+                                {
+                                    <select class="ac-sel" title="meta profile" @onchange="@(e => CmdProfile(c, "metaProfile", e))">
+                                        @for (int i = 0; i < c.MetaProfiles.Count; i++)
+                                        { <option value="@i" selected="@(i == c.SelectedMetaIdx)">@Trunc(c.MetaProfiles[i])</option> }
+                                    </select>
+                                }
+                            </div>
+                        }
+                        <div class="ac-ctrl">
+                            <button class="ac-pill" @onclick="@(() => SendCommand(c, "clearBusy", "true"))">clear busy</button>
+                            <button class="ac-pill" @onclick="@(() => SendCommand(c, "forceRebuff", "true"))">force rebuff</button>
+                            <button class="ac-pill" @onclick="@(() => SendCommand(c, "cancelRebuff", "true"))">cancel</button>
+                        </div>
+                        @if (_cmdMsg.TryGetValue(c.Pid, out var cm) && !string.IsNullOrEmpty(cm))
+                        {
+                            <div class="ac-cmd-msg">@cm</div>
+                        }
+                    }
+                }
+
+                <div class="ac-foot">
+                    <span class="@(c.InWorld && c.Fps == 0 ? "ac-warn" : "")">@c.Fps fps</span>
+                    <span class="@(c.MacroRunning && c.PluginTicksPerSec == 0 ? "ac-warn" : "")">@c.PluginTicksPerSec /s</span>
+                    <span>up @Dur(c.UptimeSec)</span>
+                    @if (c.AgeSec >= 12) { <span class="ac-warn">stale @c.AgeSec.ToString("F0")s</span> }
+                    @if (string.Equals(c.Source, "heartbeat-log", StringComparison.OrdinalIgnoreCase)) { <span title="basic info only — status export off for this client">log-only</span> }
+                </div>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    private const string UrlKey = "ac.status.url";
+    private const string TokenKey = "ac.status.token";
+
+    private string _url = "";
+    private string? _token;
+    private string _urlEdit = "";
+    private string _tokenEdit = "";
+    private bool _showConfig;
+    private bool _savedConfig;
+
+    private AcStatusResult? _result;
+    private CancellationTokenSource? _cts;
+    private bool _disposed;
+
+    private bool _showControls = true;
+    private readonly Dictionary<int, string?> _cmdMsg = new();   // per-pid transient command feedback
+    private readonly HashSet<int> _showGear = new();             // pids whose gear list is expanded
+    private void ToggleGear(int pid) { if (!_showGear.Add(pid)) _showGear.Remove(pid); }
+    private readonly HashSet<uint> _showItem = new();            // item ids whose appraisal is expanded
+    private void ToggleItem(uint id) { if (!_showItem.Add(id)) _showItem.Remove(id); }
+
+    protected override async Task OnInitializedAsync()
+    {
+        _url = await SettingsSvc.GetAsync(UrlKey, "");
+        _token = await SettingsSvc.GetAsync(TokenKey);
+        _urlEdit = _url;
+        _tokenEdit = _token ?? "";
+        _cts = new CancellationTokenSource();
+        _ = PollLoopAsync(_cts.Token);
+    }
+
+    private async Task PollLoopAsync(CancellationToken ct)
+    {
+        await RefreshOnceAsync(ct);
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(4));
+            while (await timer.WaitForNextTickAsync(ct))
+                await RefreshOnceAsync(ct);
+        }
+        catch (OperationCanceledException) { /* disposed */ }
+    }
+
+    private async Task RefreshOnceAsync(CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(_url)) return;
+        var requestedUrl = _url;   // so a response that lands after a config change is discarded
+        try
+        {
+            var r = await Status.GetStatusAsync(_url, _token, ct);
+            // Bail if the page is gone, the poll was cancelled, or the URL changed mid-flight
+            // (a stale old-host response must not overwrite the freshly-switched view).
+            if (_disposed || ct.IsCancellationRequested
+                || !string.Equals(requestedUrl, _url, StringComparison.Ordinal)) return;
+            _result = r;
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (OperationCanceledException) { /* cancelled (page disposed / config change) */ }
+        catch (ObjectDisposedException) { /* circuit/renderer torn down mid-render */ }
+    }
+
+    private Task Refresh() => RefreshOnceAsync(_cts?.Token ?? CancellationToken.None);
+
+    private void ToggleConfig() => _showConfig = !_showConfig;
+
+    private async Task SaveConfig()
+    {
+        _url = _urlEdit?.Trim() ?? "";
+        _token = string.IsNullOrWhiteSpace(_tokenEdit) ? null : _tokenEdit.Trim();
+        await SettingsSvc.SetAsync(UrlKey, _url);
+        await SettingsSvc.SetAsync(TokenKey, _token ?? "");
+        _savedConfig = true;
+        _showConfig = false;
+        _result = null;
+        await RefreshOnceAsync(_cts?.Token ?? CancellationToken.None);
+    }
+
+    private static RenderFragment Bar(string label, uint cur, uint max, string color) => __builder =>
+    {
+        int pct = max > 0 ? (int)Math.Clamp(Math.Round(cur * 100.0 / max), 0, 100) : 0;
+        <div class="ac-vlabel"><span>@label</span><span>@cur/@max</span></div>
+        <div class="ac-bar"><span style="width:@pct%;background:@color"></span></div>
+    };
+
+    private static RenderFragment Stat(string label, string value, bool warn = false) => __builder =>
+    {
+        <div class="ac-stat"><div class="sv@(warn ? " warn" : "")">@value</div><div class="sl">@label</div></div>
+    };
+
+    // ── Remote control ──────────────────────────────────────────────────────
+    private static IEnumerable<(string Action, string Label, bool On)> Toggles(AcClientStatus c) =>
+        new[]
+        {
+            ("navigation", "Nav", c.NavigationEnabled),
+            ("combat", "Combat", c.CombatEnabled),
+            ("buffing", "Buff", c.BuffingEnabled),
+            ("looting", "Loot", c.LootingEnabled),
+            ("meta", "Meta", c.MetaEnabled),
+        };
+
+    private static string Trunc(string s) => string.IsNullOrEmpty(s) ? s : (s.Length <= 14 ? s : s[..13] + "…");
+
+    private async Task CmdProfile(AcClientStatus c, string action, ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out int idx))
+            await SendCommand(c, action, idx.ToString());
+    }
+
+    private async Task SendCommand(AcClientStatus c, string action, string value)
+    {
+        _cmdMsg[c.Pid] = "sending…";
+        StateHasChanged();
+        var r = await Status.PostCommandAsync(_url, _token, c.Pid, action, value);
+        _cmdMsg[c.Pid] = r.Ok ? "✓ sent" : ("✗ " + r.Error);
+        StateHasChanged();
+        if (r.Ok)
+        {
+            // Give the box ~1.2s to poll, apply, and rewrite its status file, then refresh so the
+            // switch positions reflect reality (the feed is the source of truth, not optimistic local state).
+            try { await Task.Delay(1200, _cts?.Token ?? CancellationToken.None); } catch { }
+            if (!_disposed) await RefreshOnceAsync(_cts?.Token ?? CancellationToken.None);
+        }
+        _ = ClearMsgLater(c.Pid);
+    }
+
+    private async Task ClearMsgLater(int pid)
+    {
+        try { await Task.Delay(3000); } catch { }
+        if (_disposed) return;
+        _cmdMsg.Remove(pid);
+        await InvokeAsync(StateHasChanged);
+    }
+
+    // Compact rate: 1.2M / 450k / 87.
+    private static string FmtRate(double v)
+    {
+        if (v >= 1_000_000) return (v / 1_000_000).ToString("0.0") + "M";
+        if (v >= 1_000) return (v / 1_000).ToString("0.0") + "k";
+        return v.ToString("F0");
+    }
+
+    // Compact elapsed: "—" (none) / "12s" / "4m" / "2h".
+    private static string Since(int seconds)
+    {
+        if (seconds < 0) return "—";
+        if (seconds < 60) return $"{seconds}s";
+        if (seconds < 3600) return $"{seconds / 60}m";
+        return $"{seconds / 3600}h";
+    }
+
+    // Highlight "last kill" when a botting client hasn't killed anything in a while —
+    // the clearest "is it stuck?" signal. Only meaningful once combat is enabled.
+    private static bool StaleKill(AcClientStatus c)
+        => c.SecsSinceLastKill >= 180
+           && string.Equals(c.State, "botting", StringComparison.OrdinalIgnoreCase);
+
+    private static string StateColor(string state) => state switch
+    {
+        "botting"           => "#34d399",
+        "idle" or "running" => "#60a5fa",
+        "loading"           => "#fbbf24",
+        "wedged" or "hung" or "dead" => "#f87171",
+        _ => "#94a3b8",
+    };
+
+    private static string Dur(long seconds)
+    {
+        var t = TimeSpan.FromSeconds(seconds);
+        return t.TotalHours >= 1 ? $"{(int)t.TotalHours}h{t.Minutes:D2}m" : $"{t.Minutes}m";
+    }
+
+    private static string Ago(DateTimeOffset? ts)
+    {
+        if (ts is null) return "—";
+        var s = (DateTimeOffset.UtcNow - ts.Value).TotalSeconds;
+        return s < 0 ? "now" : s < 60 ? $"{(int)s}s ago" : $"{(int)(s / 60)}m ago";
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        _disposed = true;
+        _cts?.Cancel();
+        _cts?.Dispose();
+        _cts = null;
+        return ValueTask.CompletedTask;
+    }
+}

@@ -1,0 +1,88 @@
+name: iOS Build (unsigned IPA)
+
+# Builds RynthRemote for iOS on a free macOS runner and uploads an UNSIGNED .ipa.
+# AltStore/SideStore re-signs it with a free Apple ID at install (no $99 needed),
+# or you can re-sign for TestFlight once you have a paid Apple Developer account.
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/RynthRemote/**'
+      - '.github/workflows/ios-build.yml'
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 26.0.1 (complete; major.minor matches Microsoft.iOS 26.0)
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.0.1.app
+          echo "MD_APPLE_SDK_ROOT=/Applications/Xcode_26.0.1.app" >> "$GITHUB_ENV"
+          xcodebuild -version
+
+      - name: Setup .NET 10 (GA band)
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.100'
+
+      - name: Install MAUI iOS workload (pinned set)
+        run: |
+          dotnet workload install maui-ios --version 10.0.100
+
+      - name: Restore
+        run: dotnet restore src/RynthRemote/RynthRemote.csproj
+
+      - name: Build iOS (Release, unsigned)
+        run: |
+          # Bake a monotonically-increasing version so it MATCHES what the source feed
+          # advertises (else AltStore refuses to install on a version mismatch).
+          VERSION="1.0.${{ github.run_number }}"
+          echo "Building RynthRemote $VERSION"
+          dotnet build src/RynthRemote/RynthRemote.csproj \
+            -c Release \
+            -f net10.0-ios \
+            -p:RuntimeIdentifier=ios-arm64 \
+            -p:CodesignKey="" \
+            -p:CodesignProvision="" \
+            -p:EnableCodeSigning=false \
+            -p:ArchiveOnBuild=false \
+            -p:ApplicationDisplayVersion="$VERSION" \
+            -p:ApplicationVersion="${{ github.run_number }}"
+          echo "$VERSION" > RynthRemote-version.txt
+
+      - name: Package unsigned IPA
+        run: |
+          set -e
+          APP=$(find src/RynthRemote/bin/Release/net10.0-ios -maxdepth 4 -name "*.app" -type d | head -1)
+          if [ -z "$APP" ]; then echo "::error::No .app bundle found"; exit 1; fi
+          echo "Found app bundle: $APP"
+          rm -rf payload && mkdir -p payload/Payload
+          cp -R "$APP" payload/Payload/
+          (cd payload && zip -qr ../RynthRemote-unsigned.ipa Payload)
+          ls -la RynthRemote-unsigned.ipa
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RynthRemote-ios-unsigned
+          path: |
+            RynthRemote-unsigned.ipa
+            RynthRemote-version.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      # Auto-publish to a public SideStore source. Skips cleanly until RELEASES_TOKEN is set.
+      - name: Publish to public release feed (SideStore source)
+        env:
+          RELEASES_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        run: |
+          if [ -z "${RELEASES_TOKEN:-}" ]; then
+            echo "RELEASES_TOKEN not set — skipping public publish (set the secret to enable one-tap updates)."
+            exit 0
+          fi
+          bash tools/publish-release.sh "$(cat RynthRemote-version.txt)" RynthRemote-unsigned.ipa

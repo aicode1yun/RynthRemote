@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg width="456" height="456" viewBox="0 0 456 456" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- broadcast / remote glyph: a source dot with two signal arcs -->
+  <circle cx="228" cy="300" r="30" fill="#6366f1"/>
+  <path d="M176 256 a74 74 0 0 1 104 0" stroke="#8b8ff6" stroke-width="24" stroke-linecap="round" fill="none"/>
+  <path d="M142 222 a122 122 0 0 1 172 0" stroke="#e6ecf7" stroke-width="24" stroke-linecap="round" fill="none"/>
+</svg>

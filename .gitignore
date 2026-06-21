@@ -1,0 +1,19 @@
+# .NET / MAUI build output
+[Bb]in/
+[Oo]bj/
+*.user
+*.suo
+.vs/
+.idea/
+
+# MAUI / iOS
+*.binlog
+*.ipa
+payload/
+pubrepo/
+apps.json
+*-version.txt
+
+# OS
+.DS_Store
+Thumbs.db
