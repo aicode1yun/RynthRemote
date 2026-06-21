@@ -9,4 +9,10 @@ public static class StreamLifecycle
 {
     public static event Action? Resumed;
     public static void RaiseResumed() => Resumed?.Invoke();
+
+    /// Raised when the app backgrounds/resigns active. The live-view page uses this to release any
+    /// held movement key — otherwise a d-pad button pressed when the app is backgrounded would never
+    /// see its pointer-up and the character would keep moving.
+    public static event Action? Suspended;
+    public static void RaiseSuspended() => Suspended?.Invoke();
 }

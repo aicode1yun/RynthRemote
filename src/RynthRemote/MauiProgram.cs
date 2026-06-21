@@ -22,7 +22,9 @@ public static class MauiProgram
         builder.ConfigureLifecycleEvents(events =>
         {
 #if IOS
-            events.AddiOS(ios => ios.OnActivated(_ => StreamLifecycle.RaiseResumed()));
+            events.AddiOS(ios => ios
+                .OnActivated(_ => StreamLifecycle.RaiseResumed())
+                .OnResignActivation(_ => StreamLifecycle.RaiseSuspended()));
 #endif
         });
 

@@ -472,6 +472,19 @@ else
         _ = InvokeAsync(StateHasChanged);
     }
 
+    private void OnSuspended()
+    {
+        // App backgrounded: any d-pad button held right now won't get its pointer-up, so release every
+        // held key (a stop per held pid) before we lose the foreground. Safe to send even if none held.
+        if (_held.Count == 0 || _result?.Payload?.Clients is not { } clients) return;
+        foreach (var (pid, _) in _held.ToArray())
+        {
+            var c = clients.FirstOrDefault(x => x.Pid == pid);
+            if (c is not null) SendMove(c, "stop", false);
+        }
+        _held.Clear();
+    }
+
     private readonly HashSet<int> _closePending = new();         // pids armed for a confirm-close
     private async Task ArmClose(int pid)
     {
@@ -546,6 +559,7 @@ else
         if (int.TryParse(await SettingsSvc.GetAsync(PresetKey, "1"), out int pi))
             _defaultPreset = Math.Clamp(pi, 0, Presets.Length - 1);
         StreamLifecycle.Resumed += OnResumed;
+        StreamLifecycle.Suspended += OnSuspended;
         _cts = new CancellationTokenSource();
         _ = PollLoopAsync(_cts.Token);
     }
@@ -701,6 +715,7 @@ else
     {
         _disposed = true;
         StreamLifecycle.Resumed -= OnResumed;
+        StreamLifecycle.Suspended -= OnSuspended;
         _cts?.Cancel();
         _cts?.Dispose();
         _cts = null;
