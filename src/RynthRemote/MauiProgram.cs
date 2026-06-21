@@ -1,5 +1,6 @@
 using System.Net;
 using Microsoft.Extensions.Logging;
+using Microsoft.Maui.LifecycleEvents;
 using RynthRemote.AcStatus;
 using RynthRemote.Services;
 
@@ -16,6 +17,14 @@ public static class MauiProgram
             {
                 fonts.AddFont("OpenSans-Regular.ttf", "OpenSansRegular");
             });
+
+        // On foreground, nudge the live-view page to reconnect any streams iOS killed in the background.
+        builder.ConfigureLifecycleEvents(events =>
+        {
+#if IOS
+            events.AddiOS(ios => ios.OnActivated(_ => StreamLifecycle.RaiseResumed()));
+#endif
+        });
 
         builder.Services.AddMauiBlazorWebView();
 

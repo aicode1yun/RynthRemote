@@ -28,6 +28,9 @@ public interface IAcStatusClient
     /// POSTs a control command (toggle/profile/utility) to the agent for one client.
     /// Never throws for network problems — returns a Fail result instead.
     Task<AcCommandResult> PostCommandAsync(string? baseUrl, string? token, int pid, string action, string value, CancellationToken ct = default);
+
+    /// Fetches one /frame to learn its byte size (for the data-rate estimate). -1 on failure.
+    Task<int> MeasureFrameBytesAsync(string? baseUrl, string? token, int pid, int quality, int width, CancellationToken ct = default);
 }
 
 public sealed class AcStatusClient : IAcStatusClient
@@ -129,21 +132,49 @@ public sealed class AcStatusClient : IAcStatusClient
         return ub.Uri;
     }
 
-    /// MJPEG live-view URL for one client: ".../stream?pid=N[&token=...]". Fed straight into an
-    /// &lt;img&gt; src — the token rides as a query param since img tags can't set headers.
-    public static string BuildStreamUrl(string baseUrl, int pid, string? token)
+    /// MJPEG live-view URL for one client: ".../stream?pid=N&fps=&q=&w=[&e=][&token=]". Fed straight
+    /// into an &lt;img&gt; src — token rides as a query param since img tags can't set headers. `epoch`
+    /// changes only on app-resume, forcing the &lt;img&gt; to reconnect a stream iOS dropped in the background.
+    public static string BuildStreamUrl(string baseUrl, int pid, string? token, int fps, int quality, int width, int epoch)
+        => BuildMediaUrl(baseUrl, "/stream", pid, token, fps, quality, width, epoch);
+
+    /// Single-frame URL (for the data-rate probe).
+    public static string BuildFrameUrl(string baseUrl, int pid, string? token, int quality, int width)
+        => BuildMediaUrl(baseUrl, "/frame", pid, token, 0, quality, width, 0);
+
+    private static string BuildMediaUrl(string baseUrl, string route, int pid, string? token, int fps, int quality, int width, int epoch)
     {
         var status = BuildStatusUri(baseUrl);
         var ub = new UriBuilder(status)
         {
             Path = status.AbsolutePath
-                .Replace("/status.json", "/stream", StringComparison.OrdinalIgnoreCase)
-                .Replace("/status", "/stream", StringComparison.OrdinalIgnoreCase),
+                .Replace("/status.json", route, StringComparison.OrdinalIgnoreCase)
+                .Replace("/status", route, StringComparison.OrdinalIgnoreCase),
         };
-        string q = "pid=" + pid;
-        if (!string.IsNullOrWhiteSpace(token)) q += "&token=" + Uri.EscapeDataString(token.Trim());
-        ub.Query = q;
+        var q = new System.Text.StringBuilder($"pid={pid}&q={quality}&w={width}");
+        if (fps > 0) q.Append("&fps=").Append(fps);
+        if (epoch > 0) q.Append("&e=").Append(epoch);
+        if (!string.IsNullOrWhiteSpace(token)) q.Append("&token=").Append(Uri.EscapeDataString(token.Trim()));
+        ub.Query = q.ToString();
         return ub.Uri.ToString();
+    }
+
+    public async Task<int> MeasureFrameBytesAsync(string? baseUrl, string? token, int pid, int quality, int width, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(baseUrl)) return -1;
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        linked.CancelAfter(RequestTimeout);
+        try
+        {
+            var uri = new Uri(BuildFrameUrl(baseUrl, pid, token, quality, width));
+            using var req = new HttpRequestMessage(HttpMethod.Get, uri);
+            using var res = await _http.SendAsync(req, HttpCompletionOption.ResponseContentRead, linked.Token).ConfigureAwait(false);
+            if (!res.IsSuccessStatusCode) return -1;
+            byte[] bytes = await res.Content.ReadAsByteArrayAsync(linked.Token).ConfigureAwait(false);
+            return bytes.Length;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch { return -1; }
     }
 
     /// Accepts "host:8740", "http://host:8740", or a full ".../status[.json]" URL and

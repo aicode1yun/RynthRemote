@@ -20,8 +20,10 @@
     .ac-vlabel { display:flex; justify-content:space-between; font-size:.7rem; color:var(--muted); }
     .ac-doing { margin:.5rem 0 .25rem; font-size:.85rem; }
     .ac-stream-bar { margin:.35rem 0 .25rem; }
-    .ac-stream { margin:.25rem 0 .45rem; border:1px solid var(--border); border-radius:8px; overflow:hidden; background:#000; }
-    .ac-stream img { width:100%; display:block; }
+    .ac-stream { margin:.25rem 0 .45rem; border:1px solid var(--border); border-radius:8px; overflow:hidden; background:#000; aspect-ratio:16/10; }
+    .ac-stream img { width:100%; height:100%; object-fit:contain; display:block; background:#000; }
+    .ac-qsel { display:flex; gap:.3rem; align-items:center; flex-wrap:wrap; margin:.2rem 0 .6rem; padding:.4rem .5rem; background:var(--surface); border:1px solid var(--border); border-radius:8px; }
+    .ac-qsel .lbl { font-size:.72rem; color:var(--muted); }
     .ac-stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(56px,1fr)); gap:.3rem; margin:.4rem 0 .25rem; }
     .ac-stat { background:var(--surface-2); border-radius:6px; padding:.25rem .2rem; text-align:center; }
     .ac-stat .sv { font-weight:700; font-size:.9rem; font-variant-numeric:tabular-nums; line-height:1.1; }
@@ -113,6 +115,19 @@ else
             @_result.Payload.Host · updated @Ago(_result.Payload.GeneratedAtUtc)
         </span>
     </div>
+
+    @if (_streaming.Count > 0)
+    {
+        <div class="ac-qsel">
+            <span class="lbl">Live view:</span>
+            @for (int i = 0; i < Presets.Length; i++)
+            {
+                int idx = i;
+                <button class="ac-pill @(_presetIdx == idx ? "on" : "")" @onclick="@(() => SetPreset(idx))">@Presets[idx].Label</button>
+            }
+            <span class="lbl" style="margin-left:auto">@DataRateText()</span>
+        </div>
+    }
 
     <div class="ac-grid">
         @foreach (var c in clients.OrderByDescending(c => !c.Healthy).ThenBy(c => c.Character))
@@ -315,8 +330,64 @@ else
     private bool _showControls = true;
     private readonly Dictionary<int, string?> _cmdMsg = new();   // per-pid transient command feedback
     private readonly HashSet<int> _streaming = new();            // pids with a live MJPEG view open
-    private void ToggleStream(int pid) { if (!_streaming.Add(pid)) _streaming.Remove(pid); }
-    private string StreamSrc(int pid) => AcStatusClient.BuildStreamUrl(_url, pid, _token);
+    private int _streamEpoch;                                    // bumped on resume / quality change -> reconnect
+    private double _frameKb;                                     // measured frame size at the current preset
+    private int _presetIdx = 1;                                  // default: Balanced
+    private const string PresetKey = "ac.stream.preset";
+
+    private sealed record StreamPreset(string Label, int Fps, int Q, int W);
+    private static readonly StreamPreset[] Presets =
+    {
+        new("Saver", 2, 40, 480),     // ~tiny, for cellular
+        new("Balanced", 5, 50, 720),
+        new("Smooth", 12, 60, 0),     // native size, full motion (Wi-Fi)
+    };
+
+    private string StreamSrc(int pid)
+    {
+        var p = Presets[_presetIdx];
+        return AcStatusClient.BuildStreamUrl(_url, pid, _token, p.Fps, p.Q, p.W, _streamEpoch);
+    }
+
+    private async Task ToggleStream(int pid)
+    {
+        if (!_streaming.Add(pid)) { _streaming.Remove(pid); return; }
+        await MeasureFrameAsync(pid);
+    }
+
+    private async Task SetPreset(int idx)
+    {
+        if (idx == _presetIdx || idx < 0 || idx >= Presets.Length) return;
+        _presetIdx = idx;
+        _frameKb = 0;
+        _streamEpoch++;   // reconnect every open stream at the new quality
+        try { await SettingsSvc.SetAsync(PresetKey, idx.ToString()); } catch { }
+        StateHasChanged();
+        var any = _streaming.FirstOrDefault();
+        if (any != 0) await MeasureFrameAsync(any);
+    }
+
+    private async Task MeasureFrameAsync(int pid)
+    {
+        var p = Presets[_presetIdx];
+        int bytes = await Status.MeasureFrameBytesAsync(_url, _token, pid, p.Q, p.W);
+        if (bytes > 0) { _frameKb = bytes / 1024.0; if (!_disposed) await InvokeAsync(StateHasChanged); }
+    }
+
+    private string DataRateText()
+    {
+        if (_frameKb <= 0) return "measuring…";
+        double kbs = _frameKb * Presets[_presetIdx].Fps;
+        double totalMbHr = kbs * Math.Max(1, _streaming.Count) * 3600 / 1024;
+        return $"~{kbs:F0} KB/s/box · ~{totalMbHr:F0} MB/hr";
+    }
+
+    private void OnResumed()
+    {
+        if (_streaming.Count == 0) return;
+        _streamEpoch++;                       // iOS dropped the stream(s) in the background — reconnect
+        _ = InvokeAsync(StateHasChanged);
+    }
 
     private readonly HashSet<int> _showGear = new();             // pids whose gear list is expanded
     private void ToggleGear(int pid) { if (!_showGear.Add(pid)) _showGear.Remove(pid); }
@@ -329,6 +400,9 @@ else
         _token = await SettingsSvc.GetAsync(TokenKey);
         _urlEdit = _url;
         _tokenEdit = _token ?? "";
+        if (int.TryParse(await SettingsSvc.GetAsync(PresetKey, "1"), out int pi))
+            _presetIdx = Math.Clamp(pi, 0, Presets.Length - 1);
+        StreamLifecycle.Resumed += OnResumed;
         _cts = new CancellationTokenSource();
         _ = PollLoopAsync(_cts.Token);
     }
@@ -483,6 +557,7 @@ else
     public ValueTask DisposeAsync()
     {
         _disposed = true;
+        StreamLifecycle.Resumed -= OnResumed;
         _cts?.Cancel();
         _cts?.Dispose();
         _cts = null;
