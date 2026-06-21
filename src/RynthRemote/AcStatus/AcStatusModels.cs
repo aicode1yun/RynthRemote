@@ -93,6 +93,8 @@ public sealed class AcClientStatus
     public List<AcScarabCount>? ScarabsByType { get; set; }
     /// Worn/wielded gear (name + instance id + slot mask); null/empty when unknown.
     public List<AcEquipItem>? Equipment { get; set; }
+    /// Recent chat lines (oldest → newest); null/empty when unknown.
+    public List<AcChatLine>? RecentChat { get; set; }
     /// Most recent engine warning/error text, or null if none this session.
     public string? LastIssue { get; set; }
     /// Seconds since LastIssue; -1 = none.
@@ -103,6 +105,24 @@ public sealed class AcClientStatus
         !string.IsNullOrWhiteSpace(Character) ? Character!
         : !string.IsNullOrWhiteSpace(Account) ? Account!
         : $"PID {Pid}";
+}
+
+/// One captured chat line (text + AC chat-type for colouring).
+public sealed class AcChatLine
+{
+    [System.Text.Json.Serialization.JsonPropertyName("t")] public string Text { get; set; } = "";
+    [System.Text.Json.Serialization.JsonPropertyName("c")] public int Type { get; set; }
+
+    /// Colour by common AC chat type (speech/tell/combat/magic/system/channel), else default text.
+    public string Color => Type switch
+    {
+        3 => "#86efac",                    // tell (SpeechDirect)
+        6 => "#fca5a5",                    // combat
+        7 => "#c4b5fd",                    // magic
+        5 => "#94a3b8",                    // system event
+        >= 0x1B and <= 0x2F => "#7dd3fc",  // channels (general/trade/allegiance/etc.)
+        _ => "#e6ecf7",                    // speech / default
+    };
 }
 
 /// One worn/wielded item with its full appraisal (Assess/Identify data).

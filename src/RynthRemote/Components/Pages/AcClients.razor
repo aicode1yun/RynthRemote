@@ -47,6 +47,11 @@
     .ac-gear-row { cursor:pointer; }
     .ac-gear-row .gn { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .ac-gear-row .gi { color:var(--muted); font-family:ui-monospace,monospace; user-select:all; white-space:nowrap; }
+    .ac-chat { margin-top:.4rem; }
+    .ac-chat-log { max-height:200px; overflow-y:auto; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:.35rem .45rem; display:flex; flex-direction:column; gap:.1rem; margin:.2rem 0; }
+    .ac-chat-line { font-size:.74rem; line-height:1.25; word-break:break-word; }
+    .ac-chat-send { display:flex; gap:.3rem; }
+    .ac-chat-input { flex:1; min-width:0; background:var(--surface-2); border:1px solid var(--border); border-radius:6px; color:inherit; padding:.3rem .45rem; font-size:.85rem; }
     .ac-appr { font-size:.7rem; margin:.15rem 0 .35rem .6rem; padding-left:.5rem; border-left:2px solid var(--border); display:flex; flex-direction:column; gap:.15rem; }
     .ac-appr b { font-weight:700; }
     .ac-appr .rb { color:var(--amber); margin-left:.4rem; }
@@ -303,6 +308,32 @@ else
                             <div class="ac-cmd-msg">@cm</div>
                         }
                     }
+
+                    <div class="ac-chat">
+                        <button class="ac-gear-h" @onclick="@(() => ToggleChat(c.Pid))">
+                            @(_showChat.Contains(c.Pid) ? "▾" : "▸") Chat@(c.RecentChat is { Count: > 0 } ? $" ({c.RecentChat.Count})" : "")
+                        </button>
+                        @if (_showChat.Contains(c.Pid))
+                        {
+                            <div class="ac-chat-log">
+                                @if (c.RecentChat is { Count: > 0 })
+                                {
+                                    @for (int i = c.RecentChat.Count - 1; i >= 0; i--)
+                                    {
+                                        <div class="ac-chat-line" style="color:@c.RecentChat[i].Color">@c.RecentChat[i].Text</div>
+                                    }
+                                }
+                                else { <div class="ac-sub">no chat captured yet</div> }
+                            </div>
+                            <div class="ac-chat-send">
+                                <input class="ac-chat-input" placeholder="say, or /tell /f /command…"
+                                       value="@GetDraft(c.Pid)"
+                                       @oninput="@(e => _chatDraft[c.Pid] = e.Value?.ToString() ?? string.Empty)"
+                                       @onkeydown="@(e => ChatKeyDown(e, c))" />
+                                <button class="ac-pill" @onclick="@(() => SendChat(c))">Send</button>
+                            </div>
+                        }
+                    </div>
                 }
 
                 <div class="ac-foot">
@@ -416,6 +447,20 @@ else
     private void ToggleGear(int pid) { if (!_showGear.Add(pid)) _showGear.Remove(pid); }
     private readonly HashSet<uint> _showItem = new();            // item ids whose appraisal is expanded
     private void ToggleItem(uint id) { if (!_showItem.Add(id)) _showItem.Remove(id); }
+
+    private readonly HashSet<int> _showChat = new();             // pids whose chat panel is open
+    private void ToggleChat(int pid) { if (!_showChat.Add(pid)) _showChat.Remove(pid); }
+    private readonly Dictionary<int, string> _chatDraft = new();
+    private string GetDraft(int pid) => _chatDraft.TryGetValue(pid, out var v) ? v : "";
+    private async Task ChatKeyDown(KeyboardEventArgs e, AcClientStatus c) { if (e.Key == "Enter") await SendChat(c); }
+    private async Task SendChat(AcClientStatus c)
+    {
+        string text = GetDraft(c.Pid);
+        if (string.IsNullOrWhiteSpace(text)) return;
+        _chatDraft[c.Pid] = string.Empty;
+        StateHasChanged();
+        await SendCommand(c, "sendChat", text);
+    }
 
     protected override async Task OnInitializedAsync()
     {
