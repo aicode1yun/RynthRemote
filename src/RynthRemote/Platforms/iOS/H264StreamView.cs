@@ -30,7 +30,7 @@ public sealed class H264StreamView : UIView
     public H264StreamView()
     {
         BackgroundColor = UIColor.Black;
-        _layer.VideoGravity = AVLayerVideoGravity.ResizeAspect;
+        _layer.VideoGravity = "AVLayerVideoGravityResizeAspect";   // NSString constant; the property is a string
         Layer.AddSublayer(_layer);
     }
 
@@ -151,12 +151,12 @@ public sealed class H264StreamView : UIView
 
         // Display immediately (no presentation timestamps — lowest latency).
         var att = sample.GetSampleAttachments(true);
-        if (att.Count > 0) att[0].DisplayImmediately = true;
+        if (att.Length > 0) att[0].DisplayImmediately = true;
 
         DispatchQueue.MainQueue.DispatchAsync(() =>
         {
             if (_layer.Status == AVQueuedSampleBufferRenderingStatus.Failed) _layer.Flush();
-            _layer.EnqueueSampleBuffer(sample);
+            _layer.Enqueue(sample);
             if (!_loggedFirstFrame) { _loggedFirstFrame = true; _ = PostLog("first frame enqueued"); }
             sample.Dispose();
         });
