@@ -1,24 +1,25 @@
-// HD video mode for RynthRemote. recvonly => no getUserMedia, so no camera/mic permission.
-//
-// IMPORTANT: the offer/answer SDP exchange is done by C# (native HttpClient), NOT by a fetch() here.
-// iOS WKWebView blocks an insecure http fetch from web content as "active mixed content" (the agent is
-// http:// over Tailscale), so a JS fetch never leaves the phone. C# calls createOffer() to get the SDP,
-// POSTs it natively, then calls applyAnswer() with the agent's reply. The WebRTC media itself is
-// peer-to-peer (DTLS/SRTP over Tailscale) and unaffected by the WebView's http rules.
+// HD video mode for RynthRemote. recvonly => no getUserMedia. Signalling is done by C# (native HTTP);
+// the WebView's own http fetch is blocked by WKWebView as active mixed content. This build is
+// INSTRUMENTED: every step + every pc/ice state + any error is pushed to a log buffer that C# drains
+// and forwards to the agent log (drainLog), so WKWebView's WebRTC errors are visible PC-side.
 window.rynthHd = {
   conns: {},
+  _log: [],
+  _push(m) { try { this._log.push(m); if (this._log.length > 200) this._log.shift(); } catch (e) {} },
+  drainLog() { const l = this._log; this._log = []; return l; },
 
-  // Create a recvonly peer, return the local offer SDP (after ICE gathering) for C# to POST.
   async createOffer(videoId, pid) {
     try {
       this.stop(pid);
-      const pc = new RTCPeerConnection();              // no ICE servers => host candidate over Tailscale
+      if (typeof RTCPeerConnection === 'undefined') { this._push('FATAL: RTCPeerConnection undefined (WebRTC not available in this WebView)'); return null; }
+      const pc = new RTCPeerConnection();
       this.conns[pid] = { pc, videoId };
       pc.addTransceiver('video', { direction: 'recvonly' });
-      pc.ontrack = (e) => {
-        const v = document.getElementById(videoId);
-        if (v) { v.srcObject = e.streams[0]; v.play().catch(() => {}); }
-      };
+      pc.ontrack = (e) => { this._push('ontrack'); const v = document.getElementById(videoId); if (v) { v.srcObject = e.streams[0]; v.play().catch(err => this._push('play() rejected: ' + err)); } };
+      pc.onconnectionstatechange = () => this._push('pc=' + pc.connectionState);
+      pc.oniceconnectionstatechange = () => this._push('ice=' + pc.iceConnectionState);
+      pc.onicegatheringstatechange = () => this._push('gather=' + pc.iceGatheringState);
+      pc.onicecandidateerror = (e) => this._push('icecanderr: ' + (e.errorText || e.errorCode || ''));
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       await new Promise((res) => {
@@ -27,22 +28,29 @@ window.rynthHd = {
         pc.addEventListener('icegatheringstatechange', check);
         setTimeout(res, 1200);
       });
+      this._push('offer created (ice=' + pc.iceGatheringState + ')');
       return pc.localDescription ? pc.localDescription.sdp : null;
     } catch (e) {
+      this._push('createOffer ERR: ' + (e.name || '') + ': ' + (e.message || e));
       this.stop(pid);
       return null;
     }
   },
 
-  // Apply the agent's answer SDP (from C#). Returns false if the peer is gone or it errors.
   async applyAnswer(pid, answerSdp) {
     const c = this.conns[pid];
-    if (!c || !answerSdp) return false;
-    try { await c.pc.setRemoteDescription({ type: 'answer', sdp: answerSdp }); return true; }
-    catch (e) { this.stop(pid); return false; }
+    if (!c) { this._push('applyAnswer: no peer for pid ' + pid); return 'no-peer'; }
+    if (!answerSdp) { this._push('applyAnswer: empty answer'); return 'empty'; }
+    try {
+      await c.pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+      this._push('setRemoteDescription OK');
+      return 'ok';
+    } catch (e) {
+      this._push('setRemoteDescription ERR: ' + (e.name || '') + ': ' + (e.message || e));
+      return 'err';
+    }
   },
 
-  // Close the local peer (C# separately tells the agent to stop encoding).
   stop(pid) {
     const c = this.conns[pid];
     if (c) { try { c.pc.close(); } catch (e) {} delete this.conns[pid]; }

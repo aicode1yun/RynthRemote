@@ -39,6 +39,9 @@ public interface IAcStatusClient
 
     /// Tells the agent to tear down a pid's HD session. Best-effort.
     Task PostWebRtcStopAsync(string? baseUrl, string? token, int pid, CancellationToken ct = default);
+
+    /// Diagnostic: forward a WKWebView WebRTC log line to the agent log (so it's readable PC-side).
+    Task PostWebRtcClientLogAsync(string? baseUrl, string? token, int pid, string msg, CancellationToken ct = default);
 }
 
 public sealed class AcStatusClient : IAcStatusClient
@@ -170,6 +173,25 @@ public sealed class AcStatusClient : IAcStatusClient
             using var req = new HttpRequestMessage(HttpMethod.Post, uri);
             if (!string.IsNullOrWhiteSpace(token))
                 req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Trim());
+            using var res = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, linked.Token).ConfigureAwait(false);
+        }
+        catch { /* best-effort */ }
+    }
+
+    public async Task PostWebRtcClientLogAsync(string? baseUrl, string? token, int pid, string msg, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(baseUrl)) return;
+        Uri uri;
+        try { uri = BuildWebRtcUri(baseUrl, "/webrtc/clientlog", pid, token); }
+        catch { return; }
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        linked.CancelAfter(RequestTimeout);
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Post, uri);
+            if (!string.IsNullOrWhiteSpace(token))
+                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Trim());
+            req.Content = new StringContent(msg, System.Text.Encoding.UTF8, "text/plain");
             using var res = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, linked.Token).ConfigureAwait(false);
         }
         catch { /* best-effort */ }

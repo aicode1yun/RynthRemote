@@ -512,7 +512,6 @@ else
                 bool wantHd = Presets[PresetFor(pid)].Hd && livePids.Contains(pid);
                 if (wantHd && _hdActive.Add(pid))
                 {
-                    bool ok = false;
                     try
                     {
                         string? offer = await JS.InvokeAsync<string?>("rynthHd.createOffer", VideoId(pid), pid);
@@ -520,15 +519,32 @@ else
                         {
                             string? answer = await Status.PostWebRtcOfferAsync(_url, _token, pid, offer);
                             if (!string.IsNullOrEmpty(answer))
-                                ok = await JS.InvokeAsync<bool>("rynthHd.applyAnswer", pid, answer);
+                                await JS.InvokeAsync<string>("rynthHd.applyAnswer", pid, answer);
+                            else
+                                await Status.PostWebRtcClientLogAsync(_url, _token, pid, "agent returned no answer (offer rejected/failed)");
                         }
                     }
-                    catch { ok = false; }
-                    if (!ok) { _hdActive.Remove(pid); try { await JS.InvokeVoidAsync("rynthHd.stop", pid); } catch { } }  // retry next render
+                    catch (Exception ex) { try { await Status.PostWebRtcClientLogAsync(_url, _token, pid, "reconcile EXC: " + ex.Message); } catch { } }
+                    // Drain the WebView's WebRTC log to the agent now, and again shortly (catch async ICE/pc events).
+                    await DrainHdLog(pid);
+                    int dpid = pid;
+                    _ = Task.Run(async () => { try { await Task.Delay(2500); if (!_disposed) await DrainHdLog(dpid); } catch { } });
                 }
             }
         }
         finally { _reconcileBusy = false; }
+    }
+
+    // Drain the WebView's WebRTC log buffer and forward each line to the agent log (diagnostic).
+    private async Task DrainHdLog(int pid)
+    {
+        try
+        {
+            var lines = await JS.InvokeAsync<string[]>("rynthHd.drainLog");
+            foreach (var ln in lines)
+                await Status.PostWebRtcClientLogAsync(_url, _token, pid, ln);
+        }
+        catch { }
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
