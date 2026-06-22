@@ -486,27 +486,49 @@ else
     // element exists by then). Idempotent — only starts/stops on a diff. Start is HD-preset + streaming;
     // stop is everything else. Reuses the existing _streaming / preset state, so it tracks Stop-stream,
     // preset switches (HD↔MJPEG), and cards leaving the feed automatically.
+    private bool _reconcileBusy;   // serialize reconciles — the start path awaits network round-trips
     private async Task ReconcileHd()
     {
-        if (string.IsNullOrWhiteSpace(_url)) return;
-        var livePids = _result?.Payload?.Clients?.Select(c => c.Pid).ToHashSet() ?? new HashSet<int>();
-        // Start: streaming + HD preset + present in feed + not already active.
-        foreach (int pid in _streaming.ToArray())
+        if (string.IsNullOrWhiteSpace(_url) || _reconcileBusy) return;
+        _reconcileBusy = true;
+        try
         {
-            bool wantHd = Presets[PresetFor(pid)].Hd && livePids.Contains(pid);
-            if (wantHd && _hdActive.Add(pid))
-                try { await JS.InvokeVoidAsync("rynthHd.start", VideoId(pid), _url, _token, pid); } catch { _hdActive.Remove(pid); }
-        }
-        // Stop: any active pid that should no longer be HD-streaming.
-        foreach (int pid in _hdActive.ToArray())
-        {
-            bool wantHd = _streaming.Contains(pid) && Presets[PresetFor(pid)].Hd && livePids.Contains(pid);
-            if (!wantHd)
+            var livePids = _result?.Payload?.Clients?.Select(c => c.Pid).ToHashSet() ?? new HashSet<int>();
+            // Stop first: any active pid that should no longer be HD-streaming (preset switch / stop / gone).
+            foreach (int pid in _hdActive.ToArray())
             {
-                _hdActive.Remove(pid);
-                try { await JS.InvokeVoidAsync("rynthHd.stop", pid, _url, _token); } catch { }
+                bool wantHd = _streaming.Contains(pid) && Presets[PresetFor(pid)].Hd && livePids.Contains(pid);
+                if (!wantHd)
+                {
+                    _hdActive.Remove(pid);
+                    try { await JS.InvokeVoidAsync("rynthHd.stop", pid); } catch { }
+                    await Status.PostWebRtcStopAsync(_url, _token, pid);
+                }
+            }
+            // Start: streaming + HD preset + in feed. Signalling via C# native HTTP (the WebView's own
+            // fetch to the agent's http endpoint is blocked by WKWebView as active mixed content).
+            foreach (int pid in _streaming.ToArray())
+            {
+                bool wantHd = Presets[PresetFor(pid)].Hd && livePids.Contains(pid);
+                if (wantHd && _hdActive.Add(pid))
+                {
+                    bool ok = false;
+                    try
+                    {
+                        string? offer = await JS.InvokeAsync<string?>("rynthHd.createOffer", VideoId(pid), pid);
+                        if (!string.IsNullOrEmpty(offer))
+                        {
+                            string? answer = await Status.PostWebRtcOfferAsync(_url, _token, pid, offer);
+                            if (!string.IsNullOrEmpty(answer))
+                                ok = await JS.InvokeAsync<bool>("rynthHd.applyAnswer", pid, answer);
+                        }
+                    }
+                    catch { ok = false; }
+                    if (!ok) { _hdActive.Remove(pid); try { await JS.InvokeVoidAsync("rynthHd.stop", pid); } catch { } }  // retry next render
+                }
             }
         }
+        finally { _reconcileBusy = false; }
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -857,7 +879,10 @@ else
         foreach (var pid in pids) SendMove(pid, "stop", false);
         // Tear down any HD WebRTC streams (close the peer + tell the agent to stop encoding). Fire-and-forget.
         foreach (var pid in _hdActive.ToArray())
-            try { _ = JS.InvokeVoidAsync("rynthHd.stop", pid, _url, _token); } catch { }
+        {
+            try { _ = JS.InvokeVoidAsync("rynthHd.stop", pid); } catch { }
+            _ = Status.PostWebRtcStopAsync(_url, _token, pid);
+        }
         _hdActive.Clear();
         StreamLifecycle.Resumed -= OnResumed;
         StreamLifecycle.Suspended -= OnSuspended;

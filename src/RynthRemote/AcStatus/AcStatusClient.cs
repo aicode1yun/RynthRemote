@@ -31,6 +31,14 @@ public interface IAcStatusClient
 
     /// Fetches one /frame to learn its byte size (for the data-rate estimate). -1 on failure.
     Task<int> MeasureFrameBytesAsync(string? baseUrl, string? token, int pid, int quality, int width, CancellationToken ct = default);
+
+    /// HD video WebRTC signalling, done NATIVELY (not from WebView JS — iOS WKWebView blocks an insecure
+    /// http fetch from web content as active mixed content). POSTs the browser's offer SDP, returns the
+    /// agent's answer SDP (null on failure). The JS only creates the offer + applies the answer.
+    Task<string?> PostWebRtcOfferAsync(string? baseUrl, string? token, int pid, string offerSdp, CancellationToken ct = default);
+
+    /// Tells the agent to tear down a pid's HD session. Best-effort.
+    Task PostWebRtcStopAsync(string? baseUrl, string? token, int pid, CancellationToken ct = default);
 }
 
 public sealed class AcStatusClient : IAcStatusClient
@@ -122,6 +130,62 @@ public sealed class AcStatusClient : IAcStatusClient
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (OperationCanceledException) { return AcCommandResult.Fail("Timed out reaching the agent."); }
         catch (HttpRequestException ex) { return AcCommandResult.Fail("Can't reach the agent — " + ex.Message); }
+    }
+
+    public async Task<string?> PostWebRtcOfferAsync(string? baseUrl, string? token, int pid, string offerSdp, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(baseUrl)) return null;
+        Uri uri;
+        try { uri = BuildWebRtcUri(baseUrl, "/webrtc/offer", pid, token); }
+        catch { return null; }
+
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        linked.CancelAfter(RequestTimeout);
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Post, uri);
+            if (!string.IsNullOrWhiteSpace(token))
+                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Trim());
+            req.Content = new StringContent(JsonSerializer.Serialize(new { sdp = offerSdp }), System.Text.Encoding.UTF8, "application/json");
+            using var res = await _http.SendAsync(req, HttpCompletionOption.ResponseContentRead, linked.Token).ConfigureAwait(false);
+            if (!res.IsSuccessStatusCode) return null;
+            string json = await res.Content.ReadAsStringAsync(linked.Token).ConfigureAwait(false);
+            using var doc = JsonDocument.Parse(json);
+            return doc.RootElement.TryGetProperty("sdp", out var s) ? s.GetString() : null;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch { return null; }
+    }
+
+    public async Task PostWebRtcStopAsync(string? baseUrl, string? token, int pid, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(baseUrl)) return;
+        Uri uri;
+        try { uri = BuildWebRtcUri(baseUrl, "/webrtc/stop", pid, token); }
+        catch { return; }
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        linked.CancelAfter(RequestTimeout);
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Post, uri);
+            if (!string.IsNullOrWhiteSpace(token))
+                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Trim());
+            using var res = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, linked.Token).ConfigureAwait(false);
+        }
+        catch { /* best-effort */ }
+    }
+
+    private static Uri BuildWebRtcUri(string baseUrl, string route, int pid, string? token)
+    {
+        var status = BuildStatusUri(baseUrl);
+        var ub = new UriBuilder(status)
+        {
+            Path = status.AbsolutePath
+                .Replace("/status.json", route, StringComparison.OrdinalIgnoreCase)
+                .Replace("/status", route, StringComparison.OrdinalIgnoreCase),
+            Query = "pid=" + pid + (string.IsNullOrWhiteSpace(token) ? "" : "&token=" + Uri.EscapeDataString(token.Trim())),
+        };
+        return ub.Uri;
     }
 
     /// Same normalisation as BuildStatusUri but targets the /command route.
