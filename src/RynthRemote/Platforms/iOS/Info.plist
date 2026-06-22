@@ -37,5 +37,16 @@
         <key>NSAllowsArbitraryLoads</key>
         <true/>
     </dict>
+
+    <!-- HD video mode uses WebRTC. iOS gates the peer-to-peer ICE connectivity (LAN/Tailscale
+         candidate gathering + mDNS) behind the Local Network permission; without this declaration
+         WKWebView's ICE fails even though plain HTTP works. NSBonjourServices declares the WebRTC
+         mDNS service so the .local candidates iOS emits can be resolved. -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>RynthRemote streams your AC client to this device over your local network / Tailscale.</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_webrtc._udp</string>
+    </array>
 </dict>
 </plist>
