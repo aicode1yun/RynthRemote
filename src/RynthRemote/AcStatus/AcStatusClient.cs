@@ -19,6 +19,13 @@ public sealed record AcCommandResult(bool Ok, string? Error)
     public static AcCommandResult Fail(string error) => new(false, error);
 }
 
+/// Result of a /runs (play-history) fetch.
+public sealed record AcRunsResult(bool Ok, AcRunsPayload? Payload, string? Error)
+{
+    public static AcRunsResult Success(AcRunsPayload p) => new(true, p, null);
+    public static AcRunsResult Fail(string error) => new(false, null, error);
+}
+
 public interface IAcStatusClient
 {
     /// Fetches the StatusAgent feed from the configured URL. Never throws for
@@ -31,6 +38,10 @@ public interface IAcStatusClient
     /// so the caller can fall back to GetStatusAsync polling and retry. This is the low-latency path
     /// (the agent pushes on change, ~150ms, instead of the app polling every few seconds).
     Task StreamStatusAsync(string? baseUrl, string? token, Action<AcStatusResult> onPayload, CancellationToken ct = default);
+
+    /// Fetches the play-session history (GET /runs) for the Archive tab. Never throws for
+    /// network/parse problems — returns a Fail result instead.
+    Task<AcRunsResult> GetRunsAsync(string? baseUrl, string? token, CancellationToken ct = default);
 
     /// POSTs a control command (toggle/profile/utility) to the agent for one client.
     /// Never throws for network problems — returns a Fail result instead.
@@ -175,6 +186,40 @@ public sealed class AcStatusClient : IAcStatusClient
         }
     }
 
+    public async Task<AcRunsResult> GetRunsAsync(string? baseUrl, string? token, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(baseUrl))
+            return AcRunsResult.Fail("No status URL configured.");
+
+        Uri uri;
+        try { uri = BuildRunsUri(baseUrl); }
+        catch { return AcRunsResult.Fail("Status URL isn't a valid address."); }
+
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        linked.CancelAfter(RequestTimeout);
+        var lct = linked.Token;
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, uri);
+            if (!string.IsNullOrWhiteSpace(token))
+                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Trim());
+
+            using var res = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, lct).ConfigureAwait(false);
+            if (!res.IsSuccessStatusCode)
+                return AcRunsResult.Fail($"Agent returned {(int)res.StatusCode} {res.ReasonPhrase}.");
+
+            await using var stream = await res.Content.ReadAsStreamAsync(lct).ConfigureAwait(false);
+            var payload = await JsonSerializer.DeserializeAsync<AcRunsPayload>(stream, JsonOpts, lct).ConfigureAwait(false);
+            return payload is null
+                ? AcRunsResult.Fail("Agent returned an empty response.")
+                : AcRunsResult.Success(payload);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (OperationCanceledException) { return AcRunsResult.Fail("Timed out reaching the agent."); }
+        catch (HttpRequestException ex) { return AcRunsResult.Fail("Can't reach the agent — " + ex.Message); }
+        catch (JsonException) { return AcRunsResult.Fail("The agent sent data this app couldn't read."); }
+    }
+
     public async Task<AcCommandResult> PostCommandAsync(string? baseUrl, string? token, int pid, string action, string value, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(baseUrl))
@@ -286,6 +331,14 @@ public sealed class AcStatusClient : IAcStatusClient
     {
         var status = BuildStatusUri(baseUrl);
         var ub = new UriBuilder(status) { Path = status.AbsolutePath.Replace("/status.json", "/command", StringComparison.OrdinalIgnoreCase).Replace("/status", "/command", StringComparison.OrdinalIgnoreCase), Query = "" };
+        return ub.Uri;
+    }
+
+    /// Same normalisation as BuildStatusUri but targets the /runs route (play-session history).
+    public static Uri BuildRunsUri(string baseUrl)
+    {
+        var status = BuildStatusUri(baseUrl);
+        var ub = new UriBuilder(status) { Path = status.AbsolutePath.Replace("/status.json", "/runs", StringComparison.OrdinalIgnoreCase).Replace("/status", "/runs", StringComparison.OrdinalIgnoreCase), Query = "" };
         return ub.Uri;
     }
 

@@ -70,6 +70,25 @@
     .ac-appr .aspells { display:flex; flex-wrap:wrap; gap:.25rem; }
     .ac-appr .aspells .sp { background:var(--surface-2); border-radius:4px; padding:.05rem .35rem; }
     .ac-appr .adesc { color:var(--muted); font-style:italic; }
+    /* View tabs (Clients / Archive) */
+    .ac-tabs { display:flex; gap:.4rem; margin:.2rem 0 .7rem; }
+    .ac-tab { font-size:.9rem; padding:.5rem 1.1rem; border-radius:999px; border:1px solid var(--border); background:var(--surface-2); color:inherit; cursor:pointer; }
+    .ac-tab.on { background:var(--accent); color:#0b1220; border-color:transparent; font-weight:700; }
+    /* Archive (run history) */
+    .ac-runs { display:flex; flex-direction:column; gap:.4rem; }
+    .ac-run { border:1px solid var(--border); border-radius:10px; background:var(--surface); overflow:hidden; }
+    .ac-run.live { border-color:#34d399; }
+    .ac-run-h { width:100%; display:flex; align-items:center; gap:.6rem; padding:.6rem .7rem; background:none; border:none; color:inherit; cursor:pointer; text-align:left; }
+    .ac-run-h .rh-exp { color:var(--muted); font-size:.8rem; }
+    .ac-run-h .rh-main { display:flex; flex-direction:column; min-width:0; flex:1; }
+    .ac-run-h .rh-who { font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .ac-run-h .rh-when { font-size:.72rem; color:var(--muted); }
+    .ac-run-h .rh-kpi { display:flex; flex-direction:column; align-items:flex-end; line-height:1.1; }
+    .ac-run-h .rh-k { font-weight:700; font-variant-numeric:tabular-nums; }
+    .ac-run-h .rh-kl { font-size:.58rem; color:var(--muted); text-transform:uppercase; letter-spacing:.03em; }
+    .ac-run-h .rh-dur { font-size:.78rem; color:var(--muted); min-width:3.4rem; text-align:right; font-variant-numeric:tabular-nums; }
+    .ac-run .ac-stats { padding:0 .7rem; margin-top:.1rem; }
+    .ac-run .ac-foot { padding:.15rem .7rem .6rem; }
 </style>
 
 <div class="card-head">
@@ -79,6 +98,11 @@
         <button class="btn-r ghost sm" @onclick="ToggleConfig">@(_showConfig ? "Close" : "Connection")</button>
         <button class="btn-r ghost sm" @onclick="Refresh" disabled="@string.IsNullOrWhiteSpace(_url)">Refresh</button>
     </div>
+</div>
+
+<div class="ac-tabs">
+    <button class="ac-tab @(_view == "clients" ? "on" : "")" @onclick="@(() => SwitchView("clients"))">Clients</button>
+    <button class="ac-tab @(_view == "archive" ? "on" : "")" @onclick="@(() => SwitchView("archive"))">Archive</button>
 </div>
 
 @if (_showConfig || string.IsNullOrWhiteSpace(_url))
@@ -104,7 +128,74 @@
     </div>
 }
 
-@if (string.IsNullOrWhiteSpace(_url))
+@if (_view == "archive")
+{
+    <div class="card-head" style="margin-bottom:.4rem">
+        <span class="ac-sub">@(_runs is { Count: > 0 } ? $"{_runs.Count} run(s)" : "Run history")</span>
+        <button class="btn-r ghost sm" @onclick="LoadRunsAsync" disabled="@(string.IsNullOrWhiteSpace(_url) || _runsLoading)">@(_runsLoading ? "…" : "Refresh")</button>
+    </div>
+
+    @if (string.IsNullOrWhiteSpace(_url))
+    {
+        <div class="card-r"><p class="muted" style="margin-top:0">Set your StatusAgent URL (Connection) to see past runs.</p></div>
+    }
+    else if (_runsError is not null)
+    {
+        <div class="card-r"><p class="ac-warn" style="margin-top:0">&#9888; @_runsError</p></div>
+    }
+    else if (_runs is null)
+    {
+        <p class="loading">Loading run history…</p>
+    }
+    else if (_runs.Count == 0)
+    {
+        <div class="card-r"><p class="muted" style="margin-top:0">No runs recorded yet. Sessions show up here as clients finish — and the current run appears live while a client is botting.</p></div>
+    }
+    else
+    {
+        <div class="ac-runs">
+            @foreach (var r in _runs)
+            {
+                bool open = _expandedRuns.Contains(r.Key);
+                <div class="ac-run @(r.Ongoing ? "live" : "")" @key="r.Key">
+                    <button class="ac-run-h" @onclick="@(() => ToggleRun(r.Key))">
+                        <span class="rh-exp">@(open ? "▾" : "▸")</span>
+                        <span class="rh-main">
+                            <span class="rh-who">@r.DisplayName</span>
+                            <span class="rh-when">@RunWhen(r)</span>
+                        </span>
+                        <span class="rh-kpi">
+                            <span class="rh-k">@r.Kills</span>
+                            <span class="rh-kl">kills</span>
+                        </span>
+                        <span class="rh-dur">@Dur(r.DurationSec)</span>
+                        @if (r.Ongoing) { <span class="ac-badge" style="background:#34d399">live</span> }
+                    </button>
+                    @if (open)
+                    {
+                        <div class="ac-stats">
+                            @Stat("Kills", r.Kills.ToString())
+                            @Stat("Kills/hr", FmtRate(r.KillsPerHour))
+                            @Stat("XP", FmtRate(r.Xp))
+                            @Stat("XP/hr", FmtRate(r.XpPerHour))
+                            @Stat("Deaths", r.Deaths.ToString(), r.Deaths > 0)
+                            @if (r.LuminancePerHour > 0) { @Stat("Lum/hr", FmtRate(r.LuminancePerHour)) }
+                            @if (r.VitaePct > 0) { @Stat("Vitae", r.VitaePct.ToString("F0") + "%", true) }
+                            @Stat("Duration", Dur(r.DurationSec))
+                        </div>
+                        <div class="ac-foot">
+                            @if (!string.IsNullOrWhiteSpace(r.Server)) { <span>@r.Server</span> }
+                            @if (!string.IsNullOrWhiteSpace(r.Area)) { <span>area @r.Area</span> }
+                            <span>started @RunDateLong(r.StartUtc)</span>
+                            <span>@(r.Ongoing ? "in progress" : "ended " + RunDateLong(r.EndUtc))</span>
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+    }
+}
+else if (string.IsNullOrWhiteSpace(_url))
 {
     <div class="card-r"><p class="muted">Set your StatusAgent URL above to see your AC clients.</p></div>
 }
@@ -426,6 +517,49 @@ else
     private string _tokenEdit = "";
     private bool _showConfig;
     private bool _savedConfig;
+
+    // ── Archive (run history) view ───────────────────────────────────────────
+    private string _view = "clients";                       // "clients" | "archive"
+    private List<AcRun>? _runs;                             // null = not loaded yet
+    private string? _runsError;
+    private bool _runsLoading;
+    private readonly HashSet<string> _expandedRuns = new(); // run keys whose detail is expanded
+
+    private async Task SwitchView(string v)
+    {
+        if (_view == v) return;
+        _view = v;
+        // Lazy-load the archive the first time it's opened (or after a failure / config change cleared it).
+        if (v == "archive" && _runs is null && !_runsLoading) await LoadRunsAsync();
+        else StateHasChanged();
+    }
+
+    private void ToggleRun(string key) { if (!_expandedRuns.Add(key)) _expandedRuns.Remove(key); }
+
+    private async Task LoadRunsAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_url)) { _runsError = "Set your StatusAgent URL first."; StateHasChanged(); return; }
+        _runsLoading = true; _runsError = null; StateHasChanged();
+        var r = await Status.GetRunsAsync(_url, _token, _cts?.Token ?? CancellationToken.None);
+        _runsLoading = false;
+        if (r.Ok) { _runs = r.Payload?.Runs ?? new(); _runsError = null; }
+        else _runsError = r.Error;
+        if (!_disposed) StateHasChanged();
+    }
+
+    // Local-time "when" for a run header: Today/Yesterday + clock, else date + clock.
+    private static string RunWhen(AcRun r)
+    {
+        if (r.StartUtc is null) return "";
+        var lt = r.StartUtc.Value.ToLocalTime();
+        var today = DateTimeOffset.Now.Date;
+        if (lt.Date == today) return "Today " + lt.ToString("h:mm tt");
+        if (lt.Date == today.AddDays(-1)) return "Yesterday " + lt.ToString("h:mm tt");
+        return lt.ToString("MMM d, h:mm tt");
+    }
+
+    private static string RunDateLong(DateTimeOffset? ts)
+        => ts is null ? "—" : ts.Value.ToLocalTime().ToString("MMM d, h:mm tt");
 
     private AcStatusResult? _result;
     private CancellationTokenSource? _cts;
@@ -840,8 +974,10 @@ else
         _savedConfig = true;
         _showConfig = false;
         _result = null;
+        _runs = null; _runsError = null;           // drop cached run history; it reloads against the new host
         _lastFeedAtUtc = DateTime.MinValue;        // let the poll take over until the feed reconnects
         try { _feedConnCts?.Cancel(); } catch { }  // drop the old-host WS; the feed loop re-opens on the new URL
+        if (_view == "archive") await LoadRunsAsync();
         await RefreshOnceAsync(_cts?.Token ?? CancellationToken.None);
     }
 

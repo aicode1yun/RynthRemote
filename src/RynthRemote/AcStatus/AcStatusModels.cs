@@ -220,3 +220,47 @@ public sealed class AcVitals
     public uint Mn { get; set; }
     public uint MaxMn { get; set; }
 }
+
+/// Consumer-side mirror of the StatusAgent's GET &lt;url&gt;/runs payload (schema "rynthcore.runs/1") —
+/// the play-session history for the Archive tab. Deserialized case-insensitively.
+public sealed class AcRunsPayload
+{
+    public string? Schema { get; set; }
+    public string? Host { get; set; }
+    public DateTimeOffset? GeneratedAtUtc { get; set; }
+    public int Count { get; set; }
+    public List<AcRun> Runs { get; set; } = new();
+}
+
+/// One play session (login → exit) with its final/last stats.
+public sealed class AcRun
+{
+    public string? RunId { get; set; }
+    public int Pid { get; set; }
+    public string? Account { get; set; }
+    public string? Character { get; set; }
+    public string? Server { get; set; }
+    public DateTimeOffset? StartUtc { get; set; }
+    /// Null while the run is still in progress.
+    public DateTimeOffset? EndUtc { get; set; }
+    public long DurationSec { get; set; }
+    public int Kills { get; set; }
+    public double KillsPerHour { get; set; }
+    public long Xp { get; set; }
+    public double XpPerHour { get; set; }
+    public double LuminancePerHour { get; set; }
+    /// Deaths during this session (not all-time).
+    public int Deaths { get; set; }
+    public double VitaePct { get; set; }
+    public string? Area { get; set; }
+    /// True for the live, not-yet-finished run (shown pinned at the top, refreshes each cycle).
+    public bool Ongoing { get; set; }
+
+    public string DisplayName =>
+        !string.IsNullOrWhiteSpace(Character) ? Character!
+        : !string.IsNullOrWhiteSpace(Account) ? Account!
+        : $"PID {Pid}";
+
+    /// Stable key for expand/collapse + @key (falls back to pid+start if RunId is missing).
+    public string Key => !string.IsNullOrWhiteSpace(RunId) ? RunId! : $"{Pid}-{StartUtc?.ToUnixTimeSeconds()}";
+}
