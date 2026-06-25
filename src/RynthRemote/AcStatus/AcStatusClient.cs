@@ -26,6 +26,13 @@ public sealed record AcRunsResult(bool Ok, AcRunsPayload? Payload, string? Error
     public static AcRunsResult Fail(string error) => new(false, null, error);
 }
 
+/// Result of an /inventory (one client's full inventory) fetch.
+public sealed record AcInventoryResult(bool Ok, AcInventoryPayload? Payload, string? Error)
+{
+    public static AcInventoryResult Success(AcInventoryPayload p) => new(true, p, null);
+    public static AcInventoryResult Fail(string error) => new(false, null, error);
+}
+
 public interface IAcStatusClient
 {
     /// Fetches the StatusAgent feed from the configured URL. Never throws for
@@ -42,6 +49,10 @@ public interface IAcStatusClient
     /// Fetches the play-session history (GET /runs) for the Archive tab. Never throws for
     /// network/parse problems — returns a Fail result instead.
     Task<AcRunsResult> GetRunsAsync(string? baseUrl, string? token, CancellationToken ct = default);
+
+    /// Fetches one client's full read-only inventory (GET /inventory?pid=N). Never throws for
+    /// network/parse problems — returns a Fail result instead.
+    Task<AcInventoryResult> GetInventoryAsync(string? baseUrl, string? token, int pid, CancellationToken ct = default);
 
     /// POSTs a control command (toggle/profile/utility) to the agent for one client.
     /// Never throws for network problems — returns a Fail result instead.
@@ -220,6 +231,40 @@ public sealed class AcStatusClient : IAcStatusClient
         catch (JsonException) { return AcRunsResult.Fail("The agent sent data this app couldn't read."); }
     }
 
+    public async Task<AcInventoryResult> GetInventoryAsync(string? baseUrl, string? token, int pid, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(baseUrl))
+            return AcInventoryResult.Fail("No status URL configured.");
+
+        Uri uri;
+        try { uri = BuildInventoryUri(baseUrl, pid); }
+        catch { return AcInventoryResult.Fail("Status URL isn't a valid address."); }
+
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        linked.CancelAfter(RequestTimeout);
+        var lct = linked.Token;
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, uri);
+            if (!string.IsNullOrWhiteSpace(token))
+                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Trim());
+
+            using var res = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, lct).ConfigureAwait(false);
+            if (!res.IsSuccessStatusCode)
+                return AcInventoryResult.Fail($"Agent returned {(int)res.StatusCode} {res.ReasonPhrase}.");
+
+            await using var stream = await res.Content.ReadAsStreamAsync(lct).ConfigureAwait(false);
+            var payload = await JsonSerializer.DeserializeAsync<AcInventoryPayload>(stream, JsonOpts, lct).ConfigureAwait(false);
+            return payload is null
+                ? AcInventoryResult.Fail("Agent returned an empty response.")
+                : AcInventoryResult.Success(payload);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (OperationCanceledException) { return AcInventoryResult.Fail("Timed out reaching the agent."); }
+        catch (HttpRequestException ex) { return AcInventoryResult.Fail("Can't reach the agent — " + ex.Message); }
+        catch (JsonException) { return AcInventoryResult.Fail("The agent sent data this app couldn't read."); }
+    }
+
     public async Task<AcCommandResult> PostCommandAsync(string? baseUrl, string? token, int pid, string action, string value, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(baseUrl))
@@ -340,6 +385,36 @@ public sealed class AcStatusClient : IAcStatusClient
         var status = BuildStatusUri(baseUrl);
         var ub = new UriBuilder(status) { Path = status.AbsolutePath.Replace("/status.json", "/runs", StringComparison.OrdinalIgnoreCase).Replace("/status", "/runs", StringComparison.OrdinalIgnoreCase), Query = "" };
         return ub.Uri;
+    }
+
+    /// Same normalisation as BuildStatusUri but targets /inventory?pid=N (one client's full inventory).
+    /// Token rides as the Authorization header on the request (like /runs), not the query.
+    public static Uri BuildInventoryUri(string baseUrl, int pid)
+    {
+        var status = BuildStatusUri(baseUrl);
+        var ub = new UriBuilder(status)
+        {
+            Path = status.AbsolutePath.Replace("/status.json", "/inventory", StringComparison.OrdinalIgnoreCase).Replace("/status", "/inventory", StringComparison.OrdinalIgnoreCase),
+            Query = "pid=" + pid,
+        };
+        return ub.Uri;
+    }
+
+    /// Item-icon URL for an &lt;img&gt;: ".../icon?did=N[&token=]". The agent decodes the DID from
+    /// portal.dat to a PNG (immutable, long-cacheable). Token rides as a query param because img tags
+    /// can't set an auth header — same pattern as the MJPEG stream URL. Passive content, so iOS WKWebView
+    /// allows it (unlike an active fetch).
+    public static string BuildIconUrl(string baseUrl, uint did, string? token)
+    {
+        var status = BuildStatusUri(baseUrl);
+        var ub = new UriBuilder(status)
+        {
+            Path = status.AbsolutePath
+                .Replace("/status.json", "/icon", StringComparison.OrdinalIgnoreCase)
+                .Replace("/status", "/icon", StringComparison.OrdinalIgnoreCase),
+            Query = "did=" + did + (string.IsNullOrWhiteSpace(token) ? "" : "&token=" + Uri.EscapeDataString(token.Trim())),
+        };
+        return ub.Uri.ToString();
     }
 
     /// MJPEG live-view URL for one client: ".../stream?pid=N&fps=&q=&w=[&e=][&token=]". Fed straight

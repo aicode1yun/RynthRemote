@@ -1,0 +1,36 @@
+@* Shared appraisal detail for one item (worn gear OR an inventory item). Extracted verbatim from the
+   Gear panel so equipped + inventory render identically. Uses the global .ac-appr styles defined in
+   AcClients.razor's <style> block. Takes an AcEquipItem (the inventory item's Appraisal is that type). *@
+
+@if (Item is { } it && it.HasAppraisal)
+{
+    <div class="ac-appr">
+        @if (it.IsArmor)
+        {
+            <div><b>AL @it.ArmorLevel</b>@foreach (var r in it.NotableResists()){<span class="rb">@r.Label ×@r.Mod.ToString("0.00")</span>}</div>
+        }
+        @if (it.IsWeapon)
+        {
+            <div><b>Dmg @it.Damage</b> @it.DamageTypeName() · var ×@it.Variance.ToString("0.00")@(it.ElementalMod > 1 ? $" · elem +{(it.ElementalMod * 100 - 100):0}%" : "")</div>
+            <div>Def: melee @it.WeaponDef.ToString("0.00") · missile @it.MissileDef.ToString("0.00") · magic @it.MagicDef.ToString("0.00")</div>
+        }
+        <div class="amono">
+            @if (it.Workmanship > 0) { <span>wk @it.Workmanship</span> }
+            @if (it.Value > 0) { <span>@it.Value.ToString("N0") pyreal</span> }
+            @if (it.Burden > 0) { <span>bur @it.Burden</span> }
+            @if (it.MaxMana > 0) { <span>mana @it.CurMana/@it.MaxMana</span> }
+        </div>
+        @if (it.Spells is { Count: > 0 })
+        {
+            <div class="aspells">@foreach (var sp in it.Spells){<span class="sp">@sp</span>}</div>
+        }
+        @if (!string.IsNullOrWhiteSpace(it.LongDesc))
+        {
+            <div class="adesc">@it.LongDesc</div>
+        }
+    </div>
+}
+
+@code {
+    [Parameter] public AcEquipItem? Item { get; set; }
+}

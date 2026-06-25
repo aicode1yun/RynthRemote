@@ -46,6 +46,9 @@
     .ac-gear { margin-top:.4rem; }
     .ac-gear-h { font-size:.74rem; background:none; border:none; color:var(--muted); cursor:pointer; padding:.1rem 0; }
     .ac-gear-list { display:flex; flex-direction:column; gap:.12rem; margin-top:.2rem; }
+    .ac-inv-grp { font-size:.72rem; font-weight:700; margin:.4rem 0 .1rem; opacity:.9; }
+    .ac-inv-cap { color:var(--muted); font-weight:400; margin-left:.3rem; }
+    .ac-ico { width:1.4rem; height:1.4rem; vertical-align:middle; margin-right:.3rem; image-rendering:pixelated; border-radius:3px; }
     .ac-gear-row { display:flex; justify-content:space-between; gap:.5rem; font-size:.72rem; }
     .ac-gear-row { cursor:pointer; }
     .ac-gear-row .gn { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -365,31 +368,7 @@ else
                                             </div>
                                             @if (_showItem.Contains(it.Id) && it.HasAppraisal)
                                             {
-                                                <div class="ac-appr">
-                                                    @if (it.IsArmor)
-                                                    {
-                                                        <div><b>AL @it.ArmorLevel</b>@foreach (var r in it.NotableResists()){<span class="rb">@r.Label ×@r.Mod.ToString("0.00")</span>}</div>
-                                                    }
-                                                    @if (it.IsWeapon)
-                                                    {
-                                                        <div><b>Dmg @it.Damage</b> @it.DamageTypeName() · var ×@it.Variance.ToString("0.00")@(it.ElementalMod > 1 ? $" · elem +{(it.ElementalMod * 100 - 100):0}%" : "")</div>
-                                                        <div>Def: melee @it.WeaponDef.ToString("0.00") · missile @it.MissileDef.ToString("0.00") · magic @it.MagicDef.ToString("0.00")</div>
-                                                    }
-                                                    <div class="amono">
-                                                        @if (it.Workmanship > 0) { <span>wk @it.Workmanship</span> }
-                                                        @if (it.Value > 0) { <span>@it.Value.ToString("N0") pyreal</span> }
-                                                        @if (it.Burden > 0) { <span>bur @it.Burden</span> }
-                                                        @if (it.MaxMana > 0) { <span>mana @it.CurMana/@it.MaxMana</span> }
-                                                    </div>
-                                                    @if (it.Spells is { Count: > 0 })
-                                                    {
-                                                        <div class="aspells">@foreach (var sp in it.Spells){<span class="sp">@sp</span>}</div>
-                                                    }
-                                                    @if (!string.IsNullOrWhiteSpace(it.LongDesc))
-                                                    {
-                                                        <div class="adesc">@it.LongDesc</div>
-                                                    }
-                                                </div>
+                                                <AcAppraisal Item="it" />
                                             }
                                         </div>
                                     }
@@ -397,6 +376,54 @@ else
                             }
                         </div>
                     }
+
+                    <div class="ac-gear">
+                        <button class="ac-gear-h" @onclick="@(() => ToggleInv(c.Pid))">
+                            @(_showInv.Contains(c.Pid) ? "▾" : "▸") Inventory@(InvCountLabel(c.Pid))
+                        </button>
+                        @if (_showInv.Contains(c.Pid))
+                        {
+                            @if (_invLoading.Contains(c.Pid) && !_invByPid.ContainsKey(c.Pid))
+                            {
+                                <div class="ac-sub">loading…</div>
+                            }
+                            else if (_invError.TryGetValue(c.Pid, out var ierr) && !string.IsNullOrEmpty(ierr))
+                            {
+                                <div class="ac-warn">&#9888; @ierr</div>
+                            }
+                            else if (_invByPid.TryGetValue(c.Pid, out var inv) && inv.ItemCount > 0)
+                            {
+                                <div class="ac-gear-list">
+                                    @foreach (var cont in inv.Containers)
+                                    {
+                                        var contItems = inv.ItemsIn(cont).ToList();
+                                        if (contItems.Count > 0)
+                                        {
+                                            <div class="ac-inv-grp">@cont.Name <span class="ac-inv-cap">@contItems.Count@(cont.Capacity > 0 ? "/" + cont.Capacity : "")</span></div>
+                                            foreach (var it in contItems)
+                                            {
+                                                <div>
+                                                    <div class="ac-gear-row" @onclick="@(() => ToggleItem(it.Id))" title="tap for appraisal">
+                                                        <span class="gn">@(it.HasAppraisal ? (_showItem.Contains(it.Id) ? "▾ " : "▸ ") : "")@if (it.IconDid != 0 && !string.IsNullOrWhiteSpace(_url)){<img class="ac-ico" loading="lazy" alt="" src="@AcStatusClient.BuildIconUrl(_url, it.IconDid, _token)" onerror="this.style.display='none'" />}@it.Name@(it.StackLabel.Length > 0 ? " " + it.StackLabel : "")</span>
+                                                        <span class="gi">@it.HexId</span>
+                                                    </div>
+                                                    @if (_showItem.Contains(it.Id) && it.HasAppraisal)
+                                                    {
+                                                        <AcAppraisal Item="it.Appraisal" />
+                                                    }
+                                                </div>
+                                            }
+                                        }
+                                    }
+                                </div>
+                            }
+                            else
+                            {
+                                <div class="ac-sub">no inventory reported (is this client running RynthCore?)</div>
+                            }
+                            <button class="ac-pill" style="margin-top:.3rem" @onclick="@(() => LoadInventoryAsync(c.Pid))" disabled="@_invLoading.Contains(c.Pid)">@(_invLoading.Contains(c.Pid) ? "…" : "↻ Refresh")</button>
+                        }
+                    </div>
 
                     @if (_showControls)
                     {
@@ -732,6 +759,33 @@ else
     private void ToggleGear(int pid) { if (!_showGear.Add(pid)) _showGear.Remove(pid); }
     private readonly HashSet<uint> _showItem = new();            // item ids whose appraisal is expanded
     private void ToggleItem(uint id) { if (!_showItem.Add(id)) _showItem.Remove(id); }
+
+    // ── Inventory drawer (full inventory per client; its own on-demand /inventory fetch — NOT in the
+    // status feed, so 100s of items never ride the live push). Lazy-loaded on open; manual Refresh. ──
+    private readonly HashSet<int> _showInv = new();                          // pids whose inventory drawer is open
+    private readonly HashSet<int> _invLoading = new();                       // pids with an in-flight fetch
+    private readonly Dictionary<int, AcInventoryPayload> _invByPid = new();  // last fetched inventory per pid
+    private readonly Dictionary<int, string> _invError = new();             // last fetch error per pid
+
+    private async Task ToggleInv(int pid)
+    {
+        if (!_showInv.Add(pid)) { _showInv.Remove(pid); StateHasChanged(); return; }
+        await LoadInventoryAsync(pid);   // lazy-load on open
+    }
+
+    private async Task LoadInventoryAsync(int pid)
+    {
+        if (string.IsNullOrWhiteSpace(_url)) { _invError[pid] = "Set your StatusAgent URL first."; StateHasChanged(); return; }
+        _invLoading.Add(pid); _invError.Remove(pid); StateHasChanged();
+        var r = await Status.GetInventoryAsync(_url, _token, pid, _cts?.Token ?? CancellationToken.None);
+        _invLoading.Remove(pid);
+        if (r.Ok && r.Payload is not null) _invByPid[pid] = r.Payload;
+        else _invError[pid] = r.Error ?? "Couldn't load inventory.";
+        if (!_disposed) StateHasChanged();
+    }
+
+    private string InvCountLabel(int pid)
+        => _invByPid.TryGetValue(pid, out var inv) && inv.ItemCount > 0 ? $" ({inv.ItemCount})" : "";
 
     private readonly HashSet<int> _showChat = new();             // pids whose chat panel is open
     private void ToggleChat(int pid) { if (!_showChat.Add(pid)) _showChat.Remove(pid); }
