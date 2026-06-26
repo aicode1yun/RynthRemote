@@ -13,6 +13,22 @@
     .ac-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(250px,1fr)); gap:.75rem; }
     .ac-card { border:1px solid var(--border); border-radius:10px; padding:.7rem .8rem; background:var(--surface); }
     .ac-card.bad { border-color:var(--red); }
+    /* Fleet roll-up + collapsible glance-rows (redesign Phase 1) */
+    .ac-roll { display:flex; flex-wrap:wrap; gap:.4rem; align-items:center; margin-bottom:.6rem; }
+    .ac-chip { font-size:.78rem; padding:.35rem .7rem; border-radius:var(--r-pill); border:1px solid var(--border); background:var(--surface-2); color:var(--text-2); cursor:pointer; min-height:38px; display:inline-flex; align-items:center; gap:.35rem; }
+    .ac-chip.on { border-color:var(--accent); color:var(--text); background:var(--surface-3); }
+    .ac-chip .ac-chip-n { font-weight:700; font-variant-numeric:tabular-nums; color:var(--text); }
+    .ac-chip.attn .ac-chip-n { color:var(--state-bad); }
+    .ac-gemdot { width:10px; height:10px; border-radius:3px; flex:none; }
+    .ac-roll-meta { font-size:.7rem; color:var(--muted); margin-left:auto; }
+    .ac-rowhead { display:flex; align-items:center; gap:.6rem; cursor:pointer; min-height:40px; }
+    .ac-gem { width:20px; height:20px; border-radius:5px; flex:none; border:1px solid rgba(255,255,255,.16); box-shadow:inset 0 -3px 6px rgba(0,0,0,.35); }
+    .ac-rowmain { flex:1; min-width:0; }
+    .ac-rowsub { font-size:.72rem; color:var(--muted); text-transform:capitalize; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .ac-rowkpi { font-weight:700; font-variant-numeric:tabular-nums; color:var(--accent); font-size:1rem; white-space:nowrap; }
+    .ac-rowkpi .ac-rowkpil { font-weight:400; font-size:.7rem; color:var(--muted); margin-left:.1rem; }
+    .ac-rowstale { font-size:.7rem; white-space:nowrap; }
+    .ac-rowchev { color:var(--muted); font-size:.95rem; width:1rem; text-align:center; flex:none; }
     .ac-head { display:flex; align-items:center; justify-content:space-between; gap:.5rem; }
     .ac-name { font-weight:700; }
     .ac-sub { color:var(--muted); font-size:.78rem; }
@@ -254,28 +270,41 @@ else if (!_result.Ok)
 else
 {
     var clients = _result.Payload!.Clients;
-    var bad = clients.Count(c => !c.Healthy);
 
-    <div class="card-r mb" style="border-left:4px solid @(bad > 0 ? "var(--red)" : "var(--green)")">
-        <strong>@(clients.Count == 0 ? "No clients running"
-                  : bad == 0 ? $"All {clients.Count} healthy"
-                  : $"{bad} of {clients.Count} need attention")</strong>
-        <span class="ac-sub" style="margin-left:.5rem">
-            @_result.Payload.Host · updated @Ago(_result.Payload.GeneratedAtUtc)
-        </span>
-    </div>
+    if (clients.Count == 0)
+    {
+        <div class="card-r mb">No clients running.</div>
+    }
+    else
+    {
+        <div class="ac-roll">
+            <button class="ac-chip @(_fleetFilter == "" ? "on" : "")" @onclick="@(() => SetFleetFilter(""))"><span class="ac-chip-n">@clients.Count</span> all</button>
+            @foreach (var g in FleetGroups(clients))
+            {
+                string k = g.Key;
+                <button class="ac-chip @(g.Attn ? "attn" : "") @(_fleetFilter == k ? "on" : "")" @onclick="@(() => SetFleetFilter(k))"><span class="ac-gemdot" style="background:@StateColor(k)"></span><span class="ac-chip-n">@g.Count</span> @k</button>
+            }
+            <span class="ac-roll-meta">@_result.Payload.Host · @Ago(_result.Payload.GeneratedAtUtc)</span>
+        </div>
+    }
 
     <div class="ac-grid">
-        @foreach (var c in clients.OrderByDescending(c => !c.Healthy).ThenBy(c => c.Character))
+        @foreach (var c in FilterClients(clients).OrderByDescending(c => !c.Healthy).ThenBy(c => c.Character))
         {
             <div class="ac-card @(c.Healthy ? "" : "bad")" @key="c.Pid">
-                <div class="ac-head">
-                    <div>
+                <div class="ac-rowhead" @onclick="@(() => ToggleExpand(c.Pid))">
+                    <span class="ac-gem" style="background:@StateColor(c.State)" title="@c.State"></span>
+                    <div class="ac-rowmain">
                         <div class="ac-name">@c.DisplayName</div>
-                        <div class="ac-sub">@c.Server</div>
+                        <div class="ac-rowsub">@c.State@(string.IsNullOrWhiteSpace(c.Server) ? "" : " · " + c.Server)</div>
                     </div>
-                    <span class="ac-badge" style="background:@StateColor(c.State)">@c.State</span>
+                    @if (c.KillsPerHour > 0) { <span class="ac-rowkpi">@FmtRate(c.KillsPerHour)<span class="ac-rowkpil">k/hr</span></span> }
+                    @if (c.AgeSec >= 12) { <span class="ac-warn ac-rowstale">stale</span> }
+                    <span class="ac-rowchev">@(IsExpanded(c.Pid) ? "▾" : "▸")</span>
                 </div>
+
+                @if (IsExpanded(c.Pid))
+                {
 
                 @if (c.Player is { } v && v.MaxHp > 0)
                 {
@@ -525,6 +554,7 @@ else
                     @if (c.AgeSec >= 12) { <span class="ac-warn">stale @c.AgeSec.ToString("F0")s</span> }
                     @if (string.Equals(c.Source, "heartbeat-log", StringComparison.OrdinalIgnoreCase)) { <span title="basic info only — status export off for this client">log-only</span> }
                 </div>
+                }
             </div>
         }
     </div>
@@ -837,6 +867,31 @@ else
         _closePending.Remove(c.Pid);
         await SendCommand(c, "closeClient", "true");
     }
+
+    // ── Fleet overview (collapsible glance-rows + roll-up state filter) ──
+    private string _fleetFilter = "";                  // "" = all; otherwise a state string
+    private readonly HashSet<int> _expandedPids = new();
+
+    private void ToggleExpand(int pid) { if (!_expandedPids.Add(pid)) _expandedPids.Remove(pid); StateHasChanged(); }
+    private bool IsExpanded(int pid)
+        => _expandedPids.Contains(pid) || (_result?.Payload?.Clients?.Count ?? 0) <= 1;   // a lone client auto-expands
+
+    private void SetFleetFilter(string key)
+    {
+        _fleetFilter = (_fleetFilter == key) ? "" : key;   // tap the active chip again to clear
+        StateHasChanged();
+    }
+
+    private IEnumerable<AcClientStatus> FilterClients(IEnumerable<AcClientStatus> clients)
+        => string.IsNullOrEmpty(_fleetFilter)
+            ? clients
+            : clients.Where(c => string.Equals(c.State, _fleetFilter, StringComparison.OrdinalIgnoreCase));
+
+    private List<(string Key, int Count, bool Attn)> FleetGroups(List<AcClientStatus> clients)
+        => clients.GroupBy(c => string.IsNullOrEmpty(c.State) ? "unknown" : c.State)
+                  .Select(g => (Key: g.Key, Count: g.Count(), Attn: g.Any(c => !c.Healthy)))
+                  .OrderByDescending(g => g.Attn).ThenBy(g => g.Key)
+                  .ToList();
 
     private readonly HashSet<int> _showGear = new();             // pids whose gear list is expanded
     private void ToggleGear(int pid) { if (!_showGear.Add(pid)) _showGear.Remove(pid); }
