@@ -57,6 +57,9 @@
     .ac-pill { font-size:.8rem; padding:.45rem .8rem; border-radius:var(--r-pill); border:1px solid var(--border); background:var(--surface-2); color:inherit; cursor:pointer; min-height:40px; display:inline-flex; align-items:center; justify-content:center; gap:.25rem; }
     .ac-pill:disabled { opacity:.5; cursor:default; }
     .ac-pill.on { background:#34d399; color:#06281c; border-color:transparent; font-weight:700; }
+    .ac-pill.applying { box-shadow:0 0 0 2px var(--accent); animation:ac-applying 1.1s ease-in-out infinite; }
+    @@keyframes ac-applying { 0%,100%{opacity:1} 50%{opacity:.55} }
+    @@media (prefers-reduced-motion:reduce) { .ac-pill.applying { animation:none; } }
     .ac-pill.ac-macro.on { background:#f87171; color:#3a0b0b; }
     .ac-sel { font-size:.8rem; padding:.45rem .5rem; border-radius:var(--r-sm); border:1px solid var(--border); background:var(--surface-2); color:inherit; flex:1 1 30%; min-width:0; min-height:var(--tap); }
     .ac-cmd-msg { font-size:.7rem; color:var(--muted); margin-top:.25rem; }
@@ -459,14 +462,14 @@ else
                     @if (_showControls)
                     {
                         <div class="ac-ctrl">
-                            <button class="ac-pill ac-macro @(c.MacroRunning ? "on" : "")"
-                                    @onclick="@(() => SendCommand(c, "macro", c.MacroRunning ? "false" : "true"))">
-                                @(c.MacroRunning ? "■ Stop" : "▶ Start")
+                            <button class="ac-pill ac-macro @(EffOn(c.Pid, "macro", c.MacroRunning) ? "on" : "") @(IsApplying(c.Pid, "macro") ? "applying" : "")"
+                                    @onclick="@(() => SendCommand(c, "macro", EffOn(c.Pid, "macro", c.MacroRunning) ? "false" : "true"))">
+                                @(EffOn(c.Pid, "macro", c.MacroRunning) ? "■ Stop" : "▶ Start")
                             </button>
                             @foreach (var t in Toggles(c))
                             {
-                                <button class="ac-pill @(t.On ? "on" : "")"
-                                        @onclick="@(() => SendCommand(c, t.Action, t.On ? "false" : "true"))">@t.Label</button>
+                                <button class="ac-pill @(EffOn(c.Pid, t.Action, t.On) ? "on" : "") @(IsApplying(c.Pid, t.Action) ? "applying" : "")"
+                                        @onclick="@(() => SendCommand(c, t.Action, EffOn(c.Pid, t.Action, t.On) ? "false" : "true"))">@t.Label</button>
                             }
                         </div>
                         @if (c.NavProfiles is { Count: > 0 } || c.LootProfiles is { Count: > 0 } || c.MetaProfiles is { Count: > 0 })
@@ -499,7 +502,7 @@ else
                             <button class="ac-pill" @onclick="@(() => SendCommand(c, "clearBusy", "true"))">clear busy</button>
                             <button class="ac-pill" @onclick="@(() => SendCommand(c, "forceRebuff", "true"))">force rebuff</button>
                             <button class="ac-pill" @onclick="@(() => SendCommand(c, "cancelRebuff", "true"))">cancel</button>
-                            <button class="ac-pill @(c.UiHidden ? "on" : "")" @onclick="@(() => SendCommand(c, "hideUi", c.UiHidden ? "false" : "true"))">@(c.UiHidden ? "Show UI" : "Hide UI")</button>
+                            <button class="ac-pill @(EffOn(c.Pid, "hideUi", c.UiHidden) ? "on" : "") @(IsApplying(c.Pid, "hideUi") ? "applying" : "")" @onclick="@(() => SendCommand(c, "hideUi", EffOn(c.Pid, "hideUi", c.UiHidden) ? "false" : "true"))">@(EffOn(c.Pid, "hideUi", c.UiHidden) ? "Show UI" : "Hide UI")</button>
                             @if (_closePending.Contains(c.Pid))
                             {
                                 <button class="ac-pill ac-danger" @onclick="@(() => ConfirmClose(c))">Confirm close?</button>
@@ -1149,6 +1152,7 @@ else
             if (_disposed || ct.IsCancellationRequested
                 || !string.Equals(requestedUrl, _url, StringComparison.Ordinal)) return false;
             _result = r;
+            ReconcilePending();   // clear optimistic toggle states the feed now confirms
             if (_held.Count > 0) ReconcileHeldWithFeed();   // release any held pid that just left the feed
             await InvokeAsync(StateHasChanged);
             return r.Payload is not null;   // false on a network/agent failure → loop retries soon
@@ -1179,6 +1183,7 @@ else
                         if (_disposed || !string.Equals(url, _url, StringComparison.Ordinal)) return;
                         _lastFeedAtUtc = DateTime.UtcNow;
                         _result = r;
+                        ReconcilePending();   // clear optimistic toggle states the feed now confirms
                         if (r.Payload is not null && _held.Count > 0) ReconcileHeldWithFeed();
                         _ = InvokeAsync(StateHasChanged);
                     }, conn.Token);
@@ -1244,8 +1249,57 @@ else
             await SendCommand(c, action, idx.ToString());
     }
 
+    // ── Optimistic control feedback ──
+    // Tapping a stateful toggle (macro / the 5 modes / hideUi) flips its visual immediately and shows an
+    // "applying" shimmer until the live feed confirms the new value (or a short timeout) — so a tap never
+    // feels dead and you don't double-tap. The feed stays the source of truth; pending only overrides the
+    // DISPLAY until reconciled.
+    private readonly Dictionary<string, bool> _pending = new();          // "pid:action" -> intended value
+    private readonly Dictionary<string, DateTime> _pendingAt = new();
+    private static string PKey(int pid, string action) => pid + ":" + action;
+    private bool EffOn(int pid, string action, bool actual)
+        => _pending.TryGetValue(PKey(pid, action), out bool v) ? v : actual;
+    private bool IsApplying(int pid, string action) => _pending.ContainsKey(PKey(pid, action));
+
+    private static bool? ActualToggle(AcClientStatus c, string action) => action switch
+    {
+        "macro" => c.MacroRunning,
+        "combat" => c.CombatEnabled,
+        "buffing" => c.BuffingEnabled,
+        "navigation" => c.NavigationEnabled,
+        "looting" => c.LootingEnabled,
+        "meta" => c.MetaEnabled,
+        "hideUi" => c.UiHidden,
+        _ => null,
+    };
+
+    // Drop pendings the feed has confirmed (actual == intended) or that have timed out (~6s, so a dropped
+    // command can't pin a wrong display forever). Called whenever a fresh payload lands.
+    private void ReconcilePending()
+    {
+        if (_pending.Count == 0) return;
+        var clients = _result?.Payload?.Clients;
+        List<string>? done = null;
+        foreach (var kv in _pending)
+        {
+            int sep = kv.Key.IndexOf(':');
+            int pid = int.Parse(kv.Key.AsSpan(0, sep));
+            string action = kv.Key[(sep + 1)..];
+            bool timedOut = !_pendingAt.TryGetValue(kv.Key, out var t) || (DateTime.UtcNow - t).TotalSeconds > 6;
+            var c = clients?.FirstOrDefault(x => x.Pid == pid);
+            bool? actual = c == null ? null : ActualToggle(c, action);
+            if (timedOut || (actual.HasValue && actual.Value == kv.Value)) (done ??= new()).Add(kv.Key);
+        }
+        if (done != null) foreach (var k in done) { _pending.Remove(k); _pendingAt.Remove(k); }
+    }
+
     private async Task SendCommand(AcClientStatus c, string action, string value)
     {
+        if (ActualToggle(c, action) != null && (value == "true" || value == "false"))
+        {
+            _pending[PKey(c.Pid, action)] = value == "true";        // optimistic flip, confirmed/cleared by the feed
+            _pendingAt[PKey(c.Pid, action)] = DateTime.UtcNow;
+        }
         _cmdMsg[c.Pid] = "sending…";
         StateHasChanged();
         var r = await Status.PostCommandAsync(_url, _token, c.Pid, action, value);
